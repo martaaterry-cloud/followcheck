@@ -1,3 +1,4 @@
+import { AUTH_ENABLED } from './config.js';
 import { supabase, supabaseReady } from './supabase.js';
 import { getAuthUser } from './auth.js';
 import {
@@ -6,6 +7,10 @@ import {
 } from './storage.js';
 
 export async function getLatestSnapshot() {
+  if (!AUTH_ENABLED) {
+    return loadLocalSnapshot();
+  }
+
   const user = await getAuthUser();
   if (!user) return loadLocalSnapshot();
 
@@ -26,7 +31,7 @@ export async function getLatestSnapshot() {
 }
 
 export async function pruneOldSnapshots(userId, maxKeep = 10) {
-  if (!supabaseReady() || !userId) return;
+  if (!AUTH_ENABLED || !supabaseReady() || !userId) return;
 
   const { data, error } = await supabase
     .from('snapshots')
@@ -54,6 +59,17 @@ export async function pruneOldSnapshots(userId, maxKeep = 10) {
 }
 
 export async function saveSnapshot(snapshot) {
+  if (!AUTH_ENABLED) {
+    const local = {
+      id: Date.now(),
+      importedAt: snapshot.importedAt || new Date().toISOString(),
+      followers: snapshot.followers || [],
+      following: snapshot.following || []
+    };
+    saveLocalSnapshot(local);
+    return local;
+  }
+
   const user = await getAuthUser();
   if (!user) {
     saveLocalSnapshot(snapshot);
@@ -86,6 +102,10 @@ export async function saveSnapshot(snapshot) {
 }
 
 export async function getActivity() {
+  if (!AUTH_ENABLED) {
+    return loadLocalActivity();
+  }
+
   const user = await getAuthUser();
   if (!user) return loadLocalActivity();
 
@@ -106,6 +126,12 @@ export async function getActivity() {
 
 export async function appendActivity(events) {
   if (!events || !events.length) return;
+
+  if (!AUTH_ENABLED) {
+    const local = [...events, ...loadLocalActivity()].slice(0, 500);
+    saveLocalActivity(local);
+    return;
+  }
 
   const user = await getAuthUser();
   if (!user) {

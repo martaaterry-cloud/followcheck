@@ -1,5 +1,5 @@
 import './styles.css';
-import { APP_VERSION } from './config.js';
+import { APP_VERSION, AUTH_ENABLED } from './config.js';
 import { parseInstagramZip } from './instagramImport.js';
 import { compareSnapshots, calculateNotFollowingBack } from './compare.js';
 import { getLatestSnapshot, saveSnapshot, getActivity, appendActivity } from './repository.js';
@@ -159,12 +159,14 @@ function renderApp() {
           <h1>FollowCheck</h1>
           <div class="badge">v${APP_VERSION}</div>
         </div>
-        <div class="header-user">
-          <span class="user-tag" title="${esc(state.user?.email || '')}">
-            ${esc(state.user?.email || (supabaseReady() ? 'Conectado' : 'Modo local'))}
-          </span>
-          ${state.user ? '<button class="btn-logout" id="logoutBtn">Salir</button>' : ''}
-        </div>
+        ${AUTH_ENABLED ? `
+          <div class="header-user">
+            <span class="user-tag" title="${esc(state.user?.email || '')}">
+              ${esc(state.user?.email || (supabaseReady() ? 'Conectado' : 'Modo local'))}
+            </span>
+            ${state.user ? '<button class="btn-logout" id="logoutBtn">Salir</button>' : ''}
+          </div>
+        ` : ''}
       </header>
 
       <!-- VISTA 1: INICIO -->
@@ -188,7 +190,7 @@ function renderApp() {
         <div class="section">
           <div class="section-title">
             <h2>Actualizar Instagram</h2>
-            <small>${supabaseReady() ? (state.user ? 'Supabase conectado' : 'Sin sesión') : 'Modo local'}</small>
+            <small>${AUTH_ENABLED ? (supabaseReady() ? (state.user ? 'Supabase conectado' : 'Sin sesión') : 'Modo local') : 'Almacenamiento local'}</small>
           </div>
           <div class="card import-box">
             <div class="name">Importa tu ZIP oficial</div>
@@ -436,7 +438,7 @@ function attachAppListeners() {
 }
 
 function render() {
-  if (supabaseReady() && !state.user) {
+  if (AUTH_ENABLED && supabaseReady() && !state.user) {
     renderAuth();
   } else {
     renderApp();
@@ -445,7 +447,7 @@ function render() {
 
 async function boot() {
   try {
-    if (supabaseReady()) {
+    if (AUTH_ENABLED && supabaseReady()) {
       state.user = await getAuthUser();
       subscribeToAuth(async (event, session) => {
         state.user = session?.user || null;
@@ -460,7 +462,7 @@ async function boot() {
       });
     }
 
-    if (state.user || !supabaseReady()) {
+    if (!AUTH_ENABLED || state.user || !supabaseReady()) {
       state.snapshot = await getLatestSnapshot();
       state.activity = await getActivity();
     }
