@@ -1,13 +1,14 @@
 {
   "name": "FollowCheck",
   "short_name": "FollowCheck",
-  "start_url": "/",
+  "start_url": "/followcheck/",
+  "scope": "/followcheck/",
   "display": "standalone",
-  "background_color": "#0f0f10",
-  "theme_color": "#111111",
+  "background_color": "#0c0d0f",
+  "theme_color": "#0c0d0f",
   "icons": [
     {
-      "src": "/icon.svg",
+      "src": "icon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
       "purpose": "any"

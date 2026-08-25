@@ -22,7 +22,7 @@ export async function sendOtpEmail(email) {
   const { data, error } = await supabase.auth.signInWithOtp({
     email: cleanEmail,
     options: {
-      emailRedirectTo: window.location.origin
+      emailRedirectTo: window.location.href.split('?')[0].split('#')[0]
     }
   });
   if (error) throw error;
