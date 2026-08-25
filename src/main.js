@@ -3,7 +3,7 @@ import { APP_VERSION } from './config.js';
 import { parseInstagramZip } from './instagramImport.js';
 import { compareSnapshots, calculateNotFollowingBack } from './compare.js';
 import { getLatestSnapshot, saveSnapshot, getActivity, appendActivity } from './repository.js';
-import { getAuthUser, sendOtpEmail, verifyOtpCode, logoutUser, subscribeToAuth } from './auth.js';
+import { getAuthUser, sendOtpEmail, logoutUser, subscribeToAuth } from './auth.js';
 import { supabaseReady } from './supabase.js';
 
 const state = {
@@ -14,7 +14,6 @@ const state = {
   currentView: 'homeView',
   notBackSearch: '',
   activityFilter: 'all', // 'all' | 'unfollowed' | 'followed'
-  authMode: 'request', // 'request' | 'verify'
   pendingEmail: ''
 };
 
@@ -38,6 +37,33 @@ function formatDate(dateStr) {
   } catch {
     return '—';
   }
+}
+
+let cooldownTimer = null;
+let cooldownSeconds = 0;
+
+function startCooldown(seconds = 60) {
+  cooldownSeconds = seconds;
+  const btn = document.querySelector('#sendOtpBtn');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = `Reenviar en ${cooldownSeconds}s`;
+
+  if (cooldownTimer) clearInterval(cooldownTimer);
+  cooldownTimer = setInterval(() => {
+    cooldownSeconds -= 1;
+    const currentBtn = document.querySelector('#sendOtpBtn');
+    if (cooldownSeconds <= 0) {
+      clearInterval(cooldownTimer);
+      cooldownTimer = null;
+      if (currentBtn) {
+        currentBtn.disabled = false;
+        currentBtn.textContent = 'Enviar enlace de acceso';
+      }
+    } else if (currentBtn) {
+      currentBtn.textContent = `Reenviar en ${cooldownSeconds}s`;
+    }
+  }, 1000);
 }
 
 function renderAuth() {
@@ -64,27 +90,10 @@ function renderAuth() {
             required
             autocomplete="email"
           />
-          <button type="submit" class="primary" id="sendOtpBtn">
-            Enviar enlace / código
+          <button type="submit" class="primary" id="sendOtpBtn" ${cooldownSeconds > 0 ? 'disabled' : ''}>
+            ${cooldownSeconds > 0 ? `Reenviar en ${cooldownSeconds}s` : 'Enviar enlace de acceso'}
           </button>
         </form>
-
-        <div id="otpSection" class="${state.authMode === 'verify' ? '' : 'hidden'}" style="margin-top: 16px; border-top: 1px solid var(--border); padding-top: 16px;">
-          <p style="margin-bottom: 10px;">Introduce el código OTP de 6 dígitos que has recibido:</p>
-          <form class="auth-form" id="authOtpForm">
-            <input
-              id="authOtpInput"
-              type="text"
-              inputmode="numeric"
-              pattern="[0-9]*"
-              placeholder="Código OTP (6 dígitos)"
-              autocomplete="one-time-code"
-            />
-            <button type="submit" class="primary" id="verifyOtpBtn">
-              Verificar y entrar
-            </button>
-          </form>
-        </div>
 
         <div class="status" id="authStatus"></div>
       </section>
@@ -92,7 +101,6 @@ function renderAuth() {
   `;
 
   const emailForm = document.querySelector('#authEmailForm');
-  const otpForm = document.querySelector('#authOtpForm');
   const authStatus = document.querySelector('#authStatus');
 
   emailForm.addEventListener('submit', async (e) => {
@@ -101,48 +109,28 @@ function renderAuth() {
     const btn = document.querySelector('#sendOtpBtn');
     const email = emailInput.value.trim();
 
-    if (!email) return;
+    if (!email || cooldownSeconds > 0) return;
 
     btn.disabled = true;
     authStatus.className = 'status';
-    authStatus.textContent = 'Enviando código…';
+    authStatus.textContent = 'Enviando enlace de acceso…';
 
     try {
       await sendOtpEmail(email);
       state.pendingEmail = email;
-      state.authMode = 'verify';
       authStatus.className = 'status success';
-      authStatus.textContent = `Código enviado a ${email}.`;
-      document.querySelector('#otpSection').classList.remove('hidden');
+      authStatus.textContent = 'Te hemos enviado un enlace de acceso. Abre tu correo y pulsa Sign in.';
+      startCooldown(60);
     } catch (err) {
+      const errMsg = String(err?.message || '').toLowerCase();
       authStatus.className = 'status error';
-      authStatus.textContent = `Error: ${err.message}`;
-    } finally {
-      btn.disabled = false;
-    }
-  });
-
-  otpForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const otpInput = document.querySelector('#authOtpInput');
-    const btn = document.querySelector('#verifyOtpBtn');
-    const token = otpInput.value.trim();
-
-    if (!token || !state.pendingEmail) return;
-
-    btn.disabled = true;
-    authStatus.className = 'status';
-    authStatus.textContent = 'Verificando…';
-
-    try {
-      await verifyOtpCode(state.pendingEmail, token);
-      authStatus.className = 'status success';
-      authStatus.textContent = 'Autenticación correcta. Redirigiendo…';
-    } catch (err) {
-      authStatus.className = 'status error';
-      authStatus.textContent = `Error al verificar: ${err.message}`;
-    } finally {
-      btn.disabled = false;
+      if (errMsg.includes('rate limit') || err?.status === 429) {
+        authStatus.textContent = 'Has solicitado demasiados enlaces. Espera unos minutos antes de volver a intentarlo.';
+        startCooldown(60);
+      } else {
+        authStatus.textContent = `Error: ${err.message}`;
+        btn.disabled = false;
+      }
     }
   });
 }
