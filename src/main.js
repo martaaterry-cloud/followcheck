@@ -144,7 +144,7 @@ function renderAuth() {
   });
 }
 
-function renderAccountPopover(u, category) {
+function renderAccountPopover(u, category, acc) {
   let actionsHtml = '';
   if (category === 'normal') {
     actionsHtml = `
@@ -153,8 +153,12 @@ function renderAccountPopover(u, category) {
       <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">🗑️ Marcar como eliminada</button>
     `;
   } else if (category === 'famous') {
+    const isAuto = acc?.famousSource === 'auto';
+    const reasonText = acc?.autoFamousReason || 'Detectada automáticamente como cuenta conocida';
     actionsHtml = `
-      <button class="popover-item" data-action="restore" data-user="${esc(u)}">↩️ Mover a No me siguen</button>
+      ${isAuto ? `<div class="popover-reason">✨ ${esc(reasonText)}</div>` : ''}
+      ${isAuto ? `<button class="popover-item" data-action="famous-manual" data-user="${esc(u)}">⭐ Confirmar como marcada por ti</button>` : ''}
+      <button class="popover-item" data-action="restore" data-user="${esc(u)}">↩️ ${isAuto ? 'Mover a No me siguen (descartar)' : 'Mover a No me siguen'}</button>
       <button class="popover-item" data-action="ignore" data-user="${esc(u)}">👁️ Ignorar cuenta</button>
       <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">🗑️ Marcar como eliminada</button>
     `;
@@ -178,10 +182,16 @@ function renderAccountPopover(u, category) {
   `;
 }
 
-function renderAccountRow(u, category) {
+function renderAccountRow(u, category, acc) {
   const isMenuOpen = state.activeMenuUser === u;
   let pillHtml = '<div class="pill bad">no te sigue</div>';
-  if (category === 'famous') pillHtml = '<div class="pill info">⭐ Famosa</div>';
+  if (category === 'famous') {
+    if (acc?.famousSource === 'auto') {
+      pillHtml = '<div class="pill auto-pill" title="Detectada automáticamente">✨ Automática</div>';
+    } else {
+      pillHtml = '<div class="pill info" title="Marcada por ti">⭐ Famosa</div>';
+    }
+  }
   if (category === 'ignored') pillHtml = '<div class="pill muted-pill">👁️ Ignorada</div>';
   if (category === 'deleted') pillHtml = '<div class="pill bad-soft-pill">🗑️ Eliminada</div>';
 
@@ -191,14 +201,14 @@ function renderAccountRow(u, category) {
         <div class="avatar">${esc(initials(u))}</div>
         <div class="grow">
           <div class="name">@${esc(u)}</div>
-          <div class="sub">Tocar para abrir en Instagram</div>
+          <div class="sub">${category === 'famous' && acc?.famousSource === 'auto' ? esc(acc?.autoFamousReason || 'Detectada automáticamente') : 'Tocar para abrir en Instagram'}</div>
         </div>
       </a>
       <div class="account-actions">
         ${pillHtml}
         <button class="menu-btn ${isMenuOpen ? 'active' : ''}" data-menu-user="${esc(u)}" title="Opciones" aria-label="Opciones de cuenta">⋯</button>
       </div>
-      ${isMenuOpen ? renderAccountPopover(u, category) : ''}
+      ${isMenuOpen ? renderAccountPopover(u, category, acc) : ''}
     </div>
   `;
 }
@@ -213,6 +223,7 @@ function renderApp() {
   const famousFiltered = categorized.famous.filter(u => u.toLowerCase().includes(query));
   const ignoredFiltered = categorized.ignored.filter(u => u.toLowerCase().includes(query));
   const deletedFiltered = categorized.deleted.filter(u => u.toLowerCase().includes(query));
+  const suggestionsFiltered = categorized.suggestions.filter(u => u.toLowerCase().includes(query));
 
   const unfollowedCount = state.activity.filter(e => e.type === 'unfollowed').length;
   const followedCount = state.activity.filter(e => e.type === 'followed').length;
@@ -306,10 +317,40 @@ function renderApp() {
             <input id="searchNotBack" type="text" placeholder="Buscar por usuario…" value="${esc(state.notBackSearch)}" />
           </div>
 
+          ${snapshot && suggestionsFiltered.length ? `
+            <!-- Sugerencias de cuentas relevantes -->
+            <div class="suggestions-box card">
+              <div class="suggestions-header">
+                <span class="icon">💡</span>
+                <div class="grow">
+                  <strong>Sugerencias de cuentas relevantes</strong>
+                  <div class="sub">¿Deseas separar estas cuentas del listado principal?</div>
+                </div>
+              </div>
+              <div class="suggestions-list">
+                ${suggestionsFiltered.map(sugUser => {
+                  const sugAcc = state.knownAccounts[sugUser];
+                  return `
+                    <div class="suggestion-row">
+                      <div class="grow">
+                        <div class="name">@${esc(sugUser)}</div>
+                        <div class="sub">${esc(sugAcc?.autoFamousReason || 'Posible cuenta pública relevante')}</div>
+                      </div>
+                      <div class="suggestion-actions">
+                        <button class="btn-sug accept" data-sug-action="famous" data-user="${esc(sugUser)}">Mover</button>
+                        <button class="btn-sug dismiss" data-sug-action="dismiss" data-user="${esc(sugUser)}">Mantener</button>
+                      </div>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          ` : ''}
+
           <!-- 1. Lista principal: No me siguen -->
           <div class="card" id="notBackList">
             ${snapshot ? (
-              normalFiltered.length ? normalFiltered.map(u => renderAccountRow(u, 'normal')).join('') : '<div class="empty">No se encontraron cuentas en esta sección.</div>'
+              normalFiltered.length ? normalFiltered.map(u => renderAccountRow(u, 'normal', state.knownAccounts[u])).join('') : '<div class="empty">No se encontraron cuentas en esta sección.</div>'
             ) : '<div class="empty">Importa un ZIP para empezar.</div>'}
           </div>
 
@@ -327,7 +368,7 @@ function renderApp() {
                 </div>
               </div>
               <div class="card category-card ${state.collapsedCategories.famous ? 'hidden' : ''}">
-                ${famousFiltered.length ? famousFiltered.map(u => renderAccountRow(u, 'famous')).join('') : '<div class="empty">No hay cuentas marcadas como famosas.</div>'}
+                ${famousFiltered.length ? famousFiltered.map(u => renderAccountRow(u, 'famous', state.knownAccounts[u])).join('') : '<div class="empty">No hay cuentas marcadas como famosas.</div>'}
               </div>
             </div>
 
@@ -344,7 +385,7 @@ function renderApp() {
                 </div>
               </div>
               <div class="card category-card ${state.collapsedCategories.ignored ? 'hidden' : ''}">
-                ${ignoredFiltered.length ? ignoredFiltered.map(u => renderAccountRow(u, 'ignored')).join('') : '<div class="empty">No hay cuentas ignoradas.</div>'}
+                ${ignoredFiltered.length ? ignoredFiltered.map(u => renderAccountRow(u, 'ignored', state.knownAccounts[u])).join('') : '<div class="empty">No hay cuentas ignoradas.</div>'}
               </div>
             </div>
 
@@ -361,7 +402,7 @@ function renderApp() {
                 </div>
               </div>
               <div class="card category-card ${state.collapsedCategories.deleted ? 'hidden' : ''}">
-                ${deletedFiltered.length ? deletedFiltered.map(u => renderAccountRow(u, 'deleted')).join('') : '<div class="empty">No hay cuentas eliminadas.</div>'}
+                ${deletedFiltered.length ? deletedFiltered.map(u => renderAccountRow(u, 'deleted', state.knownAccounts[u])).join('') : '<div class="empty">No hay cuentas eliminadas.</div>'}
               </div>
             </div>
           ` : ''}
@@ -492,6 +533,27 @@ function attachAppListeners() {
     });
   });
 
+  // Acciones en sugerencias rápidas
+  document.querySelectorAll('[data-sug-action]').forEach(sugBtn => {
+    sugBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const action = sugBtn.dataset.sugAction;
+      const user = sugBtn.dataset.user;
+
+      if (!user) return;
+
+      if (action === 'famous') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
+      } else if (action === 'dismiss') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { dismissSuggestion: true });
+      }
+
+      saveLocalKnownAccounts(state.knownAccounts);
+      render();
+    });
+  });
+
   // Acciones dentro del menú contextual
   document.querySelectorAll('.popover-item').forEach(actionBtn => {
     actionBtn.addEventListener('click', (e) => {
@@ -503,7 +565,9 @@ function attachAppListeners() {
       if (!user) return;
 
       if (action === 'famous') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true });
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
+      } else if (action === 'famous-manual') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
       } else if (action === 'ignore') {
         state.knownAccounts = classifyAccount(state.knownAccounts, user, { ignored: true });
       } else if (action === 'delete') {
