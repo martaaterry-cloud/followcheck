@@ -41,10 +41,11 @@ test('instagramProfileUrl genera URL oficial para cuentas válidas y null para _
   assert.equal(instagramProfileUrl(null), null);
 });
 
-test('initDefaultCategories crea las 5 categorías predeterminadas una sola vez', () => {
+test('initDefaultCategories crea las categorías predeterminadas una sola vez', () => {
   const defaultCats = initDefaultCategories();
-  assert.equal(defaultCats.length, 5);
+  assert.equal(defaultCats.length, 6);
   assert.deepEqual(defaultCats.map(c => c.name), DEFAULT_CATEGORY_NAMES);
+
 
   // Si ya existen categorías, no las sobreescribe
   const existing = [{ id: '1', name: 'Mi lista', sortOrder: 0 }];

@@ -638,7 +638,7 @@ function renderMigrationModal() {
   `;
 }
 
-function renderAccountPopover(u, category, acc) {
+function renderAccountPopover(u, group, acc) {
   if (state.activeMenuUser !== u) return '';
 
   const pos = state.activeMenuPosition;
@@ -646,37 +646,38 @@ function renderAccountPopover(u, category, acc) {
     ? `bottom: ${pos.bottom}px; left: ${pos.left}px;`
     : `top: ${pos?.top || 100}px; left: ${pos?.left || 20}px;`;
 
-  let actionsHtml = `
-    <button class="popover-item" data-action="organize" data-user="${esc(u)}">Organizar categorías…</button>
-  `;
+  let actionsHtml = '';
 
-  if (category === 'normal') {
-    actionsHtml += `
-      <button class="popover-item" data-action="famous" data-user="${esc(u)}">Marcar como relevante</button>
-      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">Ignorar cuenta</button>
-      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">Marcar como eliminada</button>
+  if (group === 'normal') {
+    actionsHtml = `
+      <button class="popover-item" data-action="move-relevant" data-user="${esc(u)}">Mover a relevantes</button>
+      <button class="popover-item" data-action="move-secondary" data-user="${esc(u)}">Mover a cuentas secundarias</button>
+      <button class="popover-item" data-action="move-unavailable" data-user="${esc(u)}">Marcar como no disponible</button>
+      <button class="popover-item danger" data-action="move-possible-block" data-user="${esc(u)}">Marcar como posible bloqueo</button>
     `;
-  } else if (category === 'famous') {
+  } else if (group === 'relevant') {
     const isAuto = acc?.famousSource === 'auto';
     const reasonText = acc?.autoFamousReason || 'Detectada en catálogo de cuentas relevantes';
-    actionsHtml += `
+    actionsHtml = `
+      <button class="popover-item" data-action="organize" data-user="${esc(u)}">Organizar subcategorías…</button>
       ${isAuto ? `<div class="popover-reason">${esc(reasonText)}</div>` : ''}
-      ${isAuto ? `<button class="popover-item" data-action="famous-manual" data-user="${esc(u)}">Confirmar como relevante manual</button>` : ''}
-      <button class="popover-item" data-action="restore" data-user="${esc(u)}">${isAuto ? 'Mover a No me siguen (descartar)' : 'Mover a No me siguen'}</button>
-      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">Ignorar cuenta</button>
-      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">Marcar como eliminada</button>
+      <button class="popover-item" data-action="move-normal" data-user="${esc(u)}">Mover a No me siguen</button>
+      <button class="popover-item" data-action="move-secondary" data-user="${esc(u)}">Mover a cuentas secundarias</button>
+      <button class="popover-item danger" data-action="move-unavailable" data-user="${esc(u)}">Marcar como no disponible</button>
     `;
-  } else if (category === 'ignored') {
-    actionsHtml += `
-      <button class="popover-item" data-action="restore" data-user="${esc(u)}">Volver a incluir (No me siguen)</button>
-      <button class="popover-item" data-action="famous" data-user="${esc(u)}">Marcar como relevante</button>
-      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">Marcar como eliminada</button>
+  } else if (group === 'secondary') {
+    actionsHtml = `
+      <button class="popover-item" data-action="move-normal" data-user="${esc(u)}">Mover a No me siguen</button>
+      <button class="popover-item" data-action="move-relevant" data-user="${esc(u)}">Mover a relevantes</button>
+      <button class="popover-item danger" data-action="move-unavailable" data-user="${esc(u)}">Marcar como no disponible</button>
     `;
-  } else if (category === 'deleted') {
-    actionsHtml += `
-      <button class="popover-item" data-action="restore" data-user="${esc(u)}">Restaurar como activa</button>
-      <button class="popover-item" data-action="famous" data-user="${esc(u)}">Marcar como relevante</button>
-      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">Ignorar cuenta</button>
+  } else if (group === 'unavailable') {
+    actionsHtml = `
+      <button class="popover-item" data-action="move-normal" data-user="${esc(u)}">Restaurar a No me siguen</button>
+      <button class="popover-item" data-action="move-relevant" data-user="${esc(u)}">Mover a relevantes</button>
+      ${acc?.unavailableReason !== 'possible_block' ? `
+        <button class="popover-item danger" data-action="move-possible-block" data-user="${esc(u)}">Marcar como posible bloqueo</button>
+      ` : ''}
     `;
   }
 
@@ -694,20 +695,29 @@ function renderAccountPopover(u, category, acc) {
   `;
 }
 
-function renderAccountRow(u, category, acc) {
+function renderAccountRow(u, group, acc) {
   const isMenuOpen = state.activeMenuUser === u;
   let pillHtml = '<div class="pill bad">no te sigue</div>';
-  if (category === 'famous') {
+
+  if (group === 'relevant') {
     if (acc?.famousSource === 'auto') {
       pillHtml = '<div class="pill auto">Detectada automáticamente</div>';
     } else {
-      pillHtml = '<div class="pill info">Manual</div>';
+      pillHtml = '<div class="pill info">Relevante</div>';
+    }
+  } else if (group === 'secondary') {
+    pillHtml = '<div class="pill muted-pill">Cuenta secundaria</div>';
+  } else if (group === 'unavailable') {
+    if (acc?.unavailableReason === 'possible_block') {
+      pillHtml = '<div class="pill bad-soft-pill">Posible bloqueo</div>';
+    } else if (isAutoDeleted(u)) {
+      pillHtml = '<div class="pill bad-soft-pill">Eliminada</div>';
+    } else {
+      pillHtml = '<div class="pill bad-soft-pill">No disponible</div>';
     }
   }
-  if (category === 'ignored') pillHtml = '<div class="pill muted-pill">Ignorada</div>';
-  if (category === 'deleted') pillHtml = '<div class="pill bad-soft-pill">Eliminada</div>';
 
-  const categoryBadgesHtml = renderAccountCategoryBadges(u);
+  const categoryBadgesHtml = group === 'relevant' ? renderAccountCategoryBadges(u) : '';
 
   return `
     <div class="account-row">
@@ -715,7 +725,7 @@ function renderAccountRow(u, category, acc) {
         <div class="avatar">${esc(initials(u))}</div>
         <div class="grow" style="min-width: 0;">
           <div class="name">${renderUsername(u)}</div>
-          <div class="sub">${category === 'famous' && acc?.famousSource === 'auto' ? esc(acc?.autoFamousReason || 'Cuenta relevante') : 'Cuenta analizada'}</div>
+          <div class="sub">${group === 'relevant' && acc?.famousSource === 'auto' ? esc(acc?.autoFamousReason || 'Cuenta relevante') : 'Cuenta analizada'}</div>
           ${categoryBadgesHtml}
         </div>
       </div>
@@ -723,10 +733,11 @@ function renderAccountRow(u, category, acc) {
         ${pillHtml}
         <button class="menu-btn ${isMenuOpen ? 'active' : ''}" data-menu-user="${esc(u)}" title="Opciones" aria-label="Opciones de cuenta">⋯</button>
       </div>
-      ${isMenuOpen ? renderAccountPopover(u, category, acc) : ''}
+      ${isMenuOpen ? renderAccountPopover(u, group, acc) : ''}
     </div>
   `;
 }
+
 
 function renderOrganizeModal() {
   if (!state.isOrganizeModalOpen || !state.organizeTargetUser) return '';
@@ -975,17 +986,19 @@ function renderApp() {
 
   // Lista base según el estado del sistema seleccionado
   let baseList = categorized.notFollowingBack;
-  if (state.systemStateFilter === 'famous') baseList = categorized.famous;
-  if (state.systemStateFilter === 'ignored') baseList = categorized.ignored;
-  if (state.systemStateFilter === 'deleted') baseList = categorized.deleted;
+  if (state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') baseList = categorized.relevant;
+  if (state.systemStateFilter === 'secondary' || state.systemStateFilter === 'ignored') baseList = categorized.secondary;
+  if (state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') baseList = categorized.unavailable;
 
-  // Filtrado por categoría seleccionada
+  // Filtrado por subcategoría SOLO si estamos en el grupo Relevantes
   let categoryFiltered = baseList;
-  if (state.selectedCategoryFilter === 'uncategorized') {
-    categoryFiltered = baseList.filter(u => isAccountUncategorized(state.categoryMemberships, u));
-  } else if (state.selectedCategoryFilter !== 'all') {
-    const selectedCatId = state.selectedCategoryFilter;
-    categoryFiltered = baseList.filter(u => getAccountCategories(state.categoryMemberships, u).includes(selectedCatId));
+  if (state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') {
+    if (state.selectedCategoryFilter === 'uncategorized') {
+      categoryFiltered = baseList.filter(u => isAccountUncategorized(state.categoryMemberships, u));
+    } else if (state.selectedCategoryFilter !== 'all') {
+      const selectedCatId = state.selectedCategoryFilter;
+      categoryFiltered = baseList.filter(u => getAccountCategories(state.categoryMemberships, u).includes(selectedCatId));
+    }
   }
 
   // Filtrado por buscador
@@ -993,8 +1006,8 @@ function renderApp() {
   const searchFiltered = categoryFiltered.filter(u => u.toLowerCase().includes(query));
   const suggestionsFiltered = categorized.suggestions.filter(u => u.toLowerCase().includes(query));
 
-  // Conteos de categorías en la lista base actual
-  const categoryCounts = countAccountsPerCategory(baseList, state.categoryMemberships, state.categories);
+  // Conteos de subcategorías en Relevantes
+  const categoryCounts = countAccountsPerCategory(categorized.relevant, state.categoryMemberships, state.categories);
 
   const unfollowedCount = state.activity.filter(e => e.type === 'unfollowed').length;
   const followedCount = state.activity.filter(e => e.type === 'followed').length;
@@ -1109,7 +1122,7 @@ function renderApp() {
         </div>
       </section>
 
-      <!-- VISTA 2: NO ME SIGUEN (CATEGORÍAS Y ESTADOS) -->
+      <!-- VISTA 2: NO ME SIGUEN (4 GRUPOS PRINCIPALES + SUBCATEGORÍAS EN RELEVANTES) -->
       <section id="notBackView" class="${state.currentView === 'notBackView' ? '' : 'hidden'}">
         <div class="section">
           <div class="section-title">
@@ -1122,38 +1135,40 @@ function renderApp() {
             <input id="searchNotBack" type="text" placeholder="Buscar por usuario…" value="${esc(state.notBackSearch)}" />
           </div>
 
-          <!-- Pestañas de Estado del Sistema -->
+          <!-- Nivel 1: Selector de 4 Grupos Principales -->
           <div class="filter-group" style="margin-bottom: 10px;">
             <button class="filter-btn ${state.systemStateFilter === 'notBack' ? 'active' : ''}" data-state-filter="notBack">
               No me siguen (${categorized.notFollowingBack.length})
             </button>
-            <button class="filter-btn ${state.systemStateFilter === 'famous' ? 'active' : ''}" data-state-filter="famous">
-              Relevantes (${categorized.famous.length})
+            <button class="filter-btn ${state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous' ? 'active' : ''}" data-state-filter="relevant">
+              Relevantes (${categorized.relevant.length})
             </button>
-            <button class="filter-btn ${state.systemStateFilter === 'ignored' ? 'active' : ''}" data-state-filter="ignored">
-              Ignoradas (${categorized.ignored.length})
+            <button class="filter-btn ${state.systemStateFilter === 'secondary' || state.systemStateFilter === 'ignored' ? 'active' : ''}" data-state-filter="secondary">
+              Secundarias (${categorized.secondary.length})
             </button>
-            <button class="filter-btn ${state.systemStateFilter === 'deleted' ? 'active' : ''}" data-state-filter="deleted">
-              Eliminadas (${categorized.deleted.length})
+            <button class="filter-btn ${state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted' ? 'active' : ''}" data-state-filter="unavailable">
+              No disponibles (${categorized.unavailable.length})
             </button>
           </div>
 
-          <!-- Barra horizontal de Categorías Personalizadas (Pills) -->
-          <div class="category-pills-bar">
-            <button class="category-pill ${state.selectedCategoryFilter === 'all' ? 'active' : ''}" data-cat-filter="all">
-              Todos <span class="pill-count">${categoryCounts.all}</span>
-            </button>
-            <button class="category-pill ${state.selectedCategoryFilter === 'uncategorized' ? 'active' : ''}" data-cat-filter="uncategorized">
-              Sin clasificar <span class="pill-count">${categoryCounts.uncategorized}</span>
-            </button>
-            ${(state.categories || []).map(cat => `
-              <button class="category-pill ${state.selectedCategoryFilter === cat.id ? 'active' : ''}" data-cat-filter="${esc(cat.id)}">
-                ${esc(cat.name)} <span class="pill-count">${categoryCounts[cat.id] || 0}</span>
+          <!-- Nivel 2: Barra horizontal de Subcategorías (SOLO para Relevantes) -->
+          ${(state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') ? `
+            <div class="category-pills-bar">
+              <button class="category-pill ${state.selectedCategoryFilter === 'all' ? 'active' : ''}" data-cat-filter="all">
+                Todos <span class="pill-count">${categoryCounts.all}</span>
               </button>
-            `).join('')}
-          </div>
+              <button class="category-pill ${state.selectedCategoryFilter === 'uncategorized' ? 'active' : ''}" data-cat-filter="uncategorized">
+                Sin categoría <span class="pill-count">${categoryCounts.uncategorized}</span>
+              </button>
+              ${(state.categories || []).map(cat => `
+                <button class="category-pill ${state.selectedCategoryFilter === cat.id ? 'active' : ''}" data-cat-filter="${esc(cat.id)}">
+                  ${esc(cat.name)} <span class="pill-count">${categoryCounts[cat.id] || 0}</span>
+                </button>
+              `).join('')}
+            </div>
+          ` : ''}
 
-          <!-- Sugerencias de cuentas relevantes -->
+          <!-- Sugerencias de cuentas relevantes (en No me siguen) -->
           ${snapshot && state.systemStateFilter === 'notBack' && suggestionsFiltered.length ? `
             <div class="suggestions-box card">
               <div class="suggestions-header">
@@ -1172,7 +1187,7 @@ function renderApp() {
                         <div class="sub">${esc(sugAcc?.autoFamousReason || 'Cuenta pública')}</div>
                       </div>
                       <div class="suggestion-actions">
-                        <button class="btn-sug accept" data-sug-action="famous" data-user="${esc(sugUser)}">Mover</button>
+                        <button class="btn-sug accept" data-sug-action="relevant" data-user="${esc(sugUser)}">Mover</button>
                         <button class="btn-sug dismiss" data-sug-action="dismiss" data-user="${esc(sugUser)}">Mantener</button>
                       </div>
                     </div>
@@ -1186,11 +1201,11 @@ function renderApp() {
           <div class="card" id="notBackList">
             ${snapshot ? (
               searchFiltered.length ? searchFiltered.map(u => {
-                let catType = 'normal';
-                if (state.systemStateFilter === 'famous') catType = 'famous';
-                if (state.systemStateFilter === 'ignored') catType = 'ignored';
-                if (state.systemStateFilter === 'deleted') catType = 'deleted';
-                return renderAccountRow(u, catType, state.knownAccounts[u]);
+                let groupType = 'normal';
+                if (state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') groupType = 'relevant';
+                if (state.systemStateFilter === 'secondary' || state.systemStateFilter === 'ignored') groupType = 'secondary';
+                if (state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') groupType = 'unavailable';
+                return renderAccountRow(u, groupType, state.knownAccounts[u]);
               }).join('') : '<div class="empty">No se encontraron cuentas en este filtro.</div>'
             ) : '<div class="empty">Actualiza tus datos para empezar.</div>'}
           </div>
@@ -1260,12 +1275,12 @@ function renderApp() {
             </form>
           </div>
 
-          <!-- Organización y Categorías -->
+          <!-- Organización y Categorías de Relevantes -->
           <div class="card settings-card">
-            <div class="settings-title">Organización y Categorías</div>
-            <p class="sub" style="margin: 0 0 12px;">Crea categorías personalizadas para clasificar tus cuentas seguidas.</p>
+            <div class="settings-title">Organización de Relevantes</div>
+            <p class="sub" style="margin: 0 0 12px;">Crea y gestiona subcategorías para clasificar tus cuentas relevantes.</p>
             <button class="secondary" id="btnOpenManageCategoriesModal" style="width: 100%;">
-              Gestionar categorías (${state.categories.length})
+              Gestionar subcategorías (${state.categories.length})
             </button>
           </div>
 
@@ -1412,16 +1427,17 @@ function attachListeners() {
     });
   });
 
-  // Filtros de Estado del Sistema en Cuentas
+  // Filtros de Grupo Principal en Cuentas (Nivel 1)
   document.querySelectorAll('[data-state-filter]').forEach(btn => {
     btn.addEventListener('click', () => {
       state.systemStateFilter = btn.dataset.stateFilter;
+      state.selectedCategoryFilter = 'all';
       state.activeMenuUser = null;
       render();
     });
   });
 
-  // Filtros de Categorías (Pills)
+  // Filtros de Subcategorías (Nivel 2)
   document.querySelectorAll('[data-cat-filter]').forEach(btn => {
     btn.addEventListener('click', () => {
       state.selectedCategoryFilter = btn.dataset.catFilter;
@@ -1446,8 +1462,8 @@ function attachListeners() {
       const user = btn.dataset.user;
       if (!user) return;
 
-      if (action === 'famous') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
+      if (action === 'relevant' || action === 'famous') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'relevant', famousSource: 'manual' });
       } else if (action === 'dismiss') {
         state.knownAccounts = classifyAccount(state.knownAccounts, user, { dismissSuggestion: true });
       }
@@ -1512,16 +1528,16 @@ function attachListeners() {
         return;
       }
 
-      if (action === 'famous') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
-      } else if (action === 'famous-manual') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
-      } else if (action === 'ignore') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { ignored: true });
-      } else if (action === 'delete') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { deleted: true });
-      } else if (action === 'restore') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { restore: true });
+      if (action === 'move-relevant' || action === 'famous' || action === 'famous-manual') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'relevant', famousSource: 'manual' });
+      } else if (action === 'move-secondary' || action === 'ignore') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'secondary' });
+      } else if (action === 'move-unavailable' || action === 'delete') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'unavailable', unavailableReason: 'manual' });
+      } else if (action === 'move-possible-block') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'unavailable', possibleBlock: true });
+      } else if (action === 'move-normal' || action === 'restore') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'normal' });
       }
 
       saveLocalKnownAccounts(state.knownAccounts);
@@ -1534,6 +1550,7 @@ function attachListeners() {
       }
     });
   });
+
 
   // Modal Organizar Cuenta
   const btnCloseOrganizeModal = document.querySelector('#btnCloseOrganizeModal');

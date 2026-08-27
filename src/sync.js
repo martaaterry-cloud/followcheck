@@ -117,13 +117,20 @@ export function hasPendingLocalDataToMigrate({
 export function knownAccountToPreferenceRow(userId, username, acc) {
   const normUser = String(username).toLowerCase().trim();
   const now = new Date().toISOString();
+  const group = acc.group || (acc.deleted ? 'unavailable' : (acc.ignored ? 'secondary' : (acc.famous ? 'relevant' : 'normal')));
+  const unavailableReason = group === 'unavailable'
+    ? (acc.unavailableReason || (normUser.startsWith('__deleted__') ? 'deleted' : 'manual'))
+    : null;
+
   return {
     user_id: userId,
     username: normUser,
-    famous: Boolean(acc.famous),
-    famous_source: acc.famousSource || (acc.famous ? 'manual' : null),
-    ignored: Boolean(acc.ignored),
-    deleted: Boolean(acc.deleted),
+    account_group: group,
+    unavailable_reason: unavailableReason,
+    famous: group === 'relevant' || Boolean(acc.famous),
+    famous_source: acc.famousSource || (acc.famous || group === 'relevant' ? 'manual' : null),
+    ignored: group === 'secondary' || Boolean(acc.ignored),
+    deleted: group === 'unavailable' || Boolean(acc.deleted),
     auto_famous_confidence: acc.autoFamousConfidence || 0,
     auto_famous_reason: acc.autoFamousReason || '',
     auto_famous_checked_at: acc.autoFamousCheckedAt || null,
@@ -137,12 +144,17 @@ export function knownAccountToPreferenceRow(userId, username, acc) {
 
 export function preferenceRowToKnownAccount(row) {
   const now = new Date().toISOString();
+  const group = row.account_group || (row.deleted ? 'unavailable' : (row.ignored ? 'secondary' : (row.famous ? 'relevant' : 'normal')));
+  const unavailableReason = row.unavailable_reason || (group === 'unavailable' ? 'manual' : null);
+
   return {
-    status: 'normal',
-    famous: Boolean(row.famous),
+    group,
+    unavailableReason,
+    status: row.status || 'normal',
+    famous: group === 'relevant' || Boolean(row.famous),
     famousSource: row.famous_source || null,
-    ignored: Boolean(row.ignored),
-    deleted: Boolean(row.deleted),
+    ignored: group === 'secondary' || Boolean(row.ignored),
+    deleted: group === 'unavailable' || Boolean(row.deleted),
     autoFamousConfidence: Number(row.auto_famous_confidence || 0),
     autoFamousReason: row.auto_famous_reason || '',
     autoFamousCheckedAt: row.auto_famous_checked_at || null,
@@ -153,6 +165,8 @@ export function preferenceRowToKnownAccount(row) {
     updatedAt: row.updated_at || now
   };
 }
+
+
 
 export function reconcilePreferences(localKnownAccounts = {}, remoteRows = [], userId = null) {
   const merged = { ...localKnownAccounts };

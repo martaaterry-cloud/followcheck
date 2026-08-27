@@ -19,24 +19,48 @@ export function isAutoDeleted(username) {
   return u.startsWith('__deleted__');
 }
 
+/**
+ * Determina el grupo semántico a partir de los datos existentes.
+ * 1. unavailable: deleted=true o __deleted__
+ * 2. secondary: ignored=true o group='secondary'
+ * 3. relevant: famous=true o group='relevant'
+ * 4. normal
+ */
+export function resolveAccountGroup(acc, autoDel = false) {
+  if (autoDel || acc?.deleted || acc?.group === 'unavailable') {
+    return 'unavailable';
+  }
+  if (acc?.group === 'secondary' || acc?.ignored) {
+    return 'secondary';
+  }
+  if (acc?.group === 'relevant' || acc?.famous) {
+    return 'relevant';
+  }
+  return 'normal';
+}
 
 export function createAccountRecord(username, overrides = {}) {
   const now = new Date().toISOString();
   const normalized = normalizeUsername(username);
   const autoDel = isAutoDeleted(normalized);
+  const group = resolveAccountGroup(overrides, autoDel);
 
   return {
-    status: 'normal',
-    famous: false,
-    ignored: false,
-    deleted: autoDel,
+    group,
+    unavailableReason: group === 'unavailable' ? (autoDel ? 'deleted' : (overrides.unavailableReason || 'manual')) : null,
+
+    // Compatibilidad retroactiva
+    status: group === 'normal' ? 'normal' : group,
+    famous: group === 'relevant',
+    ignored: group === 'secondary',
+    deleted: group === 'unavailable',
 
     // Metadatos de detección automática
-    famousSource: null,         // 'manual' | 'auto' | null
-    autoFamousConfidence: 0.0,  // Puntuación de confianza 0.0 - 1.0
-    autoFamousReason: '',       // Explicación de la detección
-    autoFamousCheckedAt: null,  // Timestamp de evaluación
-    autoFamousDismissed: false, // true si el usuario descartó la sugerencia/clasificación automática
+    famousSource: group === 'relevant' ? (overrides.famousSource || 'manual') : null,
+    autoFamousConfidence: 0.0,  // 0.0 - 1.0
+    autoFamousReason: '',       // Explicación
+    autoFamousCheckedAt: null,  // Timestamp
+    autoFamousDismissed: false, // true si el usuario descartó clasificación
 
     note: '',
     firstSeen: now,
@@ -46,37 +70,40 @@ export function createAccountRecord(username, overrides = {}) {
 }
 
 /**
- * Evalúa si una cuenta debe clasificarse o sugerirse automáticamente como famosa.
+ * Evalúa si una cuenta debe clasificarse o sugerirse automáticamente como relevante.
  * Respeta la prioridad de decisiones manuales previas y descartes del usuario.
  */
 export function evaluateAccountAutoFamous(account, username, forceRecheck = false) {
   const now = new Date().toISOString();
   const u = normalizeUsername(username);
 
-  // Si ya fue evaluada y no se fuerza reanálisis, mantener estado
   if (account.autoFamousCheckedAt && !forceRecheck) {
     return account;
   }
 
-  // 1. Deleted o Ignored siempre prevalecen sobre famoso automático
-  if (account.deleted || account.ignored) {
+  const group = resolveAccountGroup(account);
+
+  // 1. Unavailable o Secondary siempre prevalecen sobre relevante automático
+  if (group === 'unavailable' || group === 'secondary') {
     return {
       ...account,
+      group,
       autoFamousCheckedAt: account.autoFamousCheckedAt || now
     };
   }
 
-  // 2. Famous manual o legacy de Fase A siempre prevalece y se preserva como manual
-  if (account.famous && account.famousSource !== 'auto') {
+  // 2. Relevante manual siempre prevalece
+  if (group === 'relevant' && account.famousSource !== 'auto') {
     return {
       ...account,
+      group: 'relevant',
       famous: true,
       famousSource: account.famousSource || 'manual',
       autoFamousCheckedAt: account.autoFamousCheckedAt || now
     };
   }
 
-  // 3. Si el usuario descartó previamente la clasificación automática, no volver a mover
+  // 3. Si el usuario descartó previamente, mantener
   if (account.autoFamousDismissed) {
     return {
       ...account,
@@ -88,13 +115,17 @@ export function evaluateAccountAutoFamous(account, username, forceRecheck = fals
   const detection = detectRelevantAccount(u);
   const isAutoClassify = detection.confidence >= CONFIDENCE_THRESHOLDS.AUTO_CLASSIFY;
 
+  const isRelevant = isAutoClassify ? true : (account.famous && account.famousSource === 'manual');
+  const resolvedGroup = isRelevant ? 'relevant' : 'normal';
+
   return {
     ...account,
+    group: resolvedGroup,
+    famous: isRelevant,
+    famousSource: isAutoClassify ? 'auto' : account.famousSource,
     autoFamousConfidence: detection.confidence,
     autoFamousReason: detection.reason,
-    autoFamousCheckedAt: now,
-    famous: isAutoClassify ? true : (account.famous && account.famousSource === 'manual'),
-    famousSource: isAutoClassify ? 'auto' : account.famousSource
+    autoFamousCheckedAt: now
   };
 }
 
@@ -116,13 +147,15 @@ export function syncKnownAccounts(knownAccounts = {}, snapshot = null) {
     if (updated[u]) {
       const existing = updated[u];
       const autoDel = isAutoDeleted(u);
+      const group = resolveAccountGroup(existing, autoDel);
       const withUpdatedMeta = {
         ...existing,
-        lastSeen: now,
-        deleted: existing.deleted || autoDel
+        group,
+        deleted: group === 'unavailable',
+        unavailableReason: group === 'unavailable' ? (existing.unavailableReason || (autoDel ? 'deleted' : 'manual')) : null,
+        lastSeen: now
       };
 
-      // Si aún no ha sido evaluada con el detector automático, evaluarla ahora
       if (!withUpdatedMeta.autoFamousCheckedAt) {
         updated[u] = evaluateAccountAutoFamous(withUpdatedMeta, u);
       } else {
@@ -147,44 +180,69 @@ export function classifyAccount(knownAccounts = {}, username, updates = {}) {
   const current = knownAccounts[u] || createAccountRecord(u);
   let nextState = { ...current };
 
-  if (updates.famous !== undefined) {
-    nextState.famous = Boolean(updates.famous);
-    if (nextState.famous) {
+  // 1. Mover a Relevantes
+  if (updates.group === 'relevant' || updates.famous !== undefined) {
+    const isRel = updates.group === 'relevant' || Boolean(updates.famous);
+    if (isRel) {
+      nextState.group = 'relevant';
+      nextState.famous = true;
       nextState.ignored = false;
       nextState.deleted = false;
+      nextState.unavailableReason = null;
       nextState.famousSource = updates.famousSource || 'manual';
       nextState.autoFamousDismissed = false;
     } else {
+      nextState.group = 'normal';
+      nextState.famous = false;
       nextState.famousSource = null;
     }
   }
 
-  if (updates.ignored !== undefined) {
-    nextState.ignored = Boolean(updates.ignored);
-    if (nextState.ignored) {
+  // 2. Mover a Cuentas Secundarias
+  if (updates.group === 'secondary' || updates.ignored !== undefined) {
+    const isSec = updates.group === 'secondary' || Boolean(updates.ignored);
+    if (isSec) {
+      nextState.group = 'secondary';
+      nextState.ignored = true;
       nextState.famous = false;
       nextState.deleted = false;
+      nextState.unavailableReason = null;
       nextState.famousSource = null;
+    } else {
+      nextState.group = 'normal';
+      nextState.ignored = false;
     }
   }
 
-  if (updates.deleted !== undefined) {
-    nextState.deleted = Boolean(updates.deleted);
-    if (nextState.deleted) {
+  // 3. Mover a No disponibles / Eliminadas
+  if (updates.group === 'unavailable' || updates.deleted !== undefined || updates.possibleBlock) {
+    const isUnav = updates.group === 'unavailable' || Boolean(updates.deleted) || Boolean(updates.possibleBlock);
+    if (isUnav) {
+      nextState.group = 'unavailable';
+      nextState.deleted = true;
       nextState.famous = false;
       nextState.ignored = false;
       nextState.famousSource = null;
+      nextState.unavailableReason = updates.possibleBlock
+        ? 'possible_block'
+        : (updates.unavailableReason || (isAutoDeleted(u) ? 'deleted' : 'manual'));
+    } else {
+      nextState.group = 'normal';
+      nextState.deleted = false;
+      nextState.unavailableReason = null;
     }
   }
 
-  if (updates.restore === true || updates.status === 'normal') {
-    // Si era automática, registrar descarte para evitar que vuelva a auto-clasificarse sola
+  // 4. Restaurar a normal (No me siguen)
+  if (updates.restore === true || updates.status === 'normal' || updates.group === 'normal') {
     if (nextState.famousSource === 'auto') {
       nextState.autoFamousDismissed = true;
     }
+    nextState.group = 'normal';
     nextState.famous = false;
     nextState.ignored = false;
     nextState.deleted = false;
+    nextState.unavailableReason = null;
     nextState.famousSource = null;
     nextState.status = 'normal';
   }
@@ -207,9 +265,9 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
   const accounts = knownAccounts || {};
 
   const notFollowingBack = [];
-  const famous = [];
-  const ignored = [];
-  const deleted = [];
+  const relevant = [];
+  const secondary = [];
+  const unavailable = [];
   const suggestions = [];
 
   for (const rawUsername of notFollowingBackList) {
@@ -217,20 +275,19 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
     if (!u) continue;
 
     const acc = accounts[u];
-    const isDel = acc?.deleted === true || isAutoDeleted(u);
-    const isIgn = !isDel && acc?.ignored === true;
-    const isFam = !isDel && !isIgn && acc?.famous === true;
+    const autoDel = isAutoDeleted(u);
+    const group = resolveAccountGroup(acc, autoDel);
 
-    if (isDel) {
-      deleted.push(rawUsername);
-    } else if (isIgn) {
-      ignored.push(rawUsername);
-    } else if (isFam) {
-      famous.push(rawUsername);
+    if (group === 'unavailable') {
+      unavailable.push(rawUsername);
+    } else if (group === 'secondary') {
+      secondary.push(rawUsername);
+    } else if (group === 'relevant') {
+      relevant.push(rawUsername);
     } else {
       notFollowingBack.push(rawUsername);
 
-      // Evaluar si es candidata a sugerencia
+      // Sugerencias automáticas
       if (
         !acc?.autoFamousDismissed &&
         acc?.autoFamousConfidence >= CONFIDENCE_THRESHOLDS.SUGGEST &&
@@ -243,9 +300,13 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
 
   return {
     notFollowingBack,
-    famous,
-    ignored,
-    deleted,
-    suggestions
+    relevant,
+    secondary,
+    unavailable,
+    suggestions,
+    // Alias para compatibilidad con código existente
+    famous: relevant,
+    ignored: secondary,
+    deleted: unavailable
   };
 }

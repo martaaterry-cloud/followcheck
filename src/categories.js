@@ -1,10 +1,12 @@
 export const DEFAULT_CATEGORY_NAMES = [
-  'Cuentas secundarias',
+  'Fútbol',
   'Balonmano',
+  'Gimnasio / fitness',
   'Influencers',
-  'Marcas de ropa',
-  'Fútbol'
+  'Restaurantes',
+  'Marcas de ropa'
 ];
+
 
 function generateId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
