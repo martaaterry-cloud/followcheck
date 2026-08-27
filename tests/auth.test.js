@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validatePassword, getAuthSession, getAuthUser, logoutUser } from '../src/auth.js';
+import { validatePassword, getAuthSession, getAuthUser, logoutUser, updateUserPassword } from '../src/auth.js';
 
 test('validatePassword: valida contraseña correcta', () => {
   const res = validatePassword('123456', '123456');
@@ -36,4 +36,13 @@ test('logoutUser se ejecuta sin lanzar excepciones', async () => {
   await assert.doesNotReject(async () => {
     await logoutUser();
   });
+});
+
+test('updateUserPassword valida longitud antes de llamar a Supabase', async () => {
+  await assert.rejects(
+    async () => {
+      await updateUserPassword('12345');
+    },
+    /6 caracteres/i
+  );
 });

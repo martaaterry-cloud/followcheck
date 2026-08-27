@@ -1,4 +1,5 @@
-const CACHE_NAME = 'followcheck-pwa-v0.2.1';
+const CACHE_NAME = 'followcheck-pwa-v0.2.2';
+
 
 
 const STATIC_ASSETS = [

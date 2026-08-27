@@ -8,9 +8,10 @@ import {
   getRemotePreferences, upsertRemotePreferences, upsertSingleRemotePreference
 } from './repository.js';
 import {
-  getAuthUser, getAuthSession, loginWithPassword, registerWithPassword, resetPassword,
+  getAuthUser, getAuthSession, loginWithPassword, registerWithPassword, resetPassword, updateUserPassword,
   logoutUser, subscribeToAuth
 } from './auth.js';
+
 import { supabaseReady } from './supabase.js';
 import {
   loadLocalKnownAccounts, saveLocalKnownAccounts,
@@ -243,6 +244,51 @@ function renderAuth() {
         <button type="button" class="auth-link-btn" id="toLoginBtn">Volver a Iniciar sesión</button>
       </div>
     `;
+  } else if (state.authView === 'updatePassword') {
+    formHtml = `
+      <h2 class="auth-title">Crear nueva contraseña</h2>
+      <p class="auth-sub">Define la nueva contraseña para acceder a tu cuenta.</p>
+
+      <form class="auth-form" id="updatePasswordForm">
+        <div class="auth-field">
+          <label class="auth-label" for="authPasswordInput">Nueva contraseña</label>
+          <input
+            id="authPasswordInput"
+            type="password"
+            placeholder="Mínimo 6 caracteres"
+            value="${esc(state.authPassword)}"
+            required
+            autocomplete="new-password"
+          />
+        </div>
+        <div class="auth-field">
+          <label class="auth-label" for="authConfirmPasswordInput">Confirmar nueva contraseña</label>
+          <input
+            id="authConfirmPasswordInput"
+            type="password"
+            placeholder="Repite la contraseña"
+            value="${esc(state.authConfirmPassword)}"
+            required
+            autocomplete="new-password"
+          />
+        </div>
+        <button type="submit" class="primary" id="submitAuthBtn" ${state.isAuthLoading ? 'disabled' : ''}>
+          ${state.isAuthLoading ? 'Guardando…' : 'Guardar nueva contraseña'}
+        </button>
+      </form>
+
+      ${state.authError ? `
+        <div class="status error" style="margin-top: 12px;">${esc(state.authError)}</div>
+      ` : ''}
+
+      ${state.authSuccess ? `
+        <div class="status success" style="margin-top: 12px;">${esc(state.authSuccess)}</div>
+      ` : ''}
+
+      <div class="auth-links">
+        <button type="button" class="auth-link-btn" id="toLoginBtn">Volver a Iniciar sesión</button>
+      </div>
+    `;
   }
 
   app.innerHTML = `
@@ -358,7 +404,6 @@ function attachAuthListeners() {
     });
   }
 
-
   const forgotForm = document.querySelector('#forgotForm');
   if (forgotForm) {
     forgotForm.addEventListener('submit', async (e) => {
@@ -371,7 +416,7 @@ function attachAuthListeners() {
       try {
         await resetPassword(state.authEmail);
         state.isAuthLoading = false;
-        state.authSuccess = 'Se ha enviado un enlace a tu correo para restablecer la contraseña.';
+        state.authSuccess = 'Te hemos enviado un enlace para crear una nueva contraseña. Revisa tu bandeja de entrada o spam.';
         render();
       } catch (err) {
         state.isAuthLoading = false;
@@ -380,7 +425,39 @@ function attachAuthListeners() {
       }
     });
   }
+
+  const updatePasswordForm = document.querySelector('#updatePasswordForm');
+  if (updatePasswordForm) {
+    updatePasswordForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      state.isAuthLoading = true;
+      state.authError = '';
+      state.authSuccess = '';
+      render();
+
+      try {
+        const data = await updateUserPassword(state.authPassword, state.authConfirmPassword);
+        state.isAuthLoading = false;
+        state.user = data.user;
+        state.authPassword = '';
+        state.authConfirmPassword = '';
+        state.authSuccess = 'Contraseña actualizada correctamente.';
+        state.authView = 'login';
+
+        if (typeof window !== 'undefined' && window.history?.replaceState) {
+          window.history.replaceState(null, '', window.location.pathname);
+        }
+
+        await onUserAuthenticated(data.user);
+      } catch (err) {
+        state.isAuthLoading = false;
+        state.authError = err.message;
+        render();
+      }
+    });
+  }
 }
+
 
 async function syncWithCloud(silent = false) {
   if (!AUTH_ENABLED || !supabaseReady() || !state.user) return;
@@ -1445,6 +1522,11 @@ async function boot() {
     });
 
     if (AUTH_ENABLED && supabaseReady()) {
+      // Detección de enlace de recuperación en URL
+      if (typeof window !== 'undefined' && (window.location.hash.includes('type=recovery') || window.location.search.includes('type=recovery'))) {
+        state.authView = 'updatePassword';
+      }
+
       const session = await getAuthSession();
       state.user = session?.user || null;
       console.log('[auth] initial session:', state.user ? 'yes' : 'no');
@@ -1453,6 +1535,14 @@ async function boot() {
       subscribeToAuth(async (event, currentSession) => {
         console.log('[auth] event:', event);
         const currentUser = currentSession?.user || null;
+
+        if (event === 'PASSWORD_RECOVERY') {
+          state.authView = 'updatePassword';
+          state.authError = '';
+          state.authSuccess = '';
+          render();
+          return;
+        }
 
         if (event === 'SIGNED_OUT') {
           state.user = null;
@@ -1464,6 +1554,10 @@ async function boot() {
         if (currentUser && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION')) {
           const isNewUser = !state.user || state.user.id !== currentUser.id;
           state.user = currentUser;
+          if (state.authView === 'updatePassword') {
+            render();
+            return;
+          }
           if (isNewUser || !initialProcessed) {
             initialProcessed = true;
             await onUserAuthenticated(currentUser);
@@ -1473,11 +1567,12 @@ async function boot() {
         }
       });
 
-      if (state.user && !initialProcessed) {
+      if (state.user && !initialProcessed && state.authView !== 'updatePassword') {
         initialProcessed = true;
         await onUserAuthenticated(state.user);
       }
     }
+
   } catch (err) {
     console.error('Boot error:', err);
   }

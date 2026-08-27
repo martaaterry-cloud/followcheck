@@ -22,10 +22,10 @@ function mapAuthError(err) {
     return 'Error de conexión. Comprueba tu acceso a internet.';
   }
   if (status === 429 || msg.includes('rate limit') || msg.includes('too many requests') || msg.includes('over_email_send_rate_limit')) {
-    return 'Has realizado demasiados intentos. Por favor, espera unos minutos.';
+    return 'Supabase ha limitado temporalmente los correos. Espera antes de solicitar otro.';
   }
   if (msg.includes('invalid login credentials') || msg.includes('invalid_grant') || msg.includes('invalid credentials')) {
-    return 'Correo o contraseña incorrectos.';
+    return 'La contraseña no es correcta o el correo no está registrado.';
   }
   if (msg.includes('email not confirmed')) {
     return 'Debes confirmar tu correo electrónico antes de iniciar sesión.';
@@ -134,10 +134,35 @@ export async function resetPassword(email) {
     throw new Error('Introduce tu correo electrónico.');
   }
 
-  const redirectTo = window.location.href.split('?')[0].split('#')[0];
+  const redirectTo = typeof window !== 'undefined'
+    ? `${window.location.origin}${window.location.pathname}`
+    : 'https://martaaterry-cloud.github.io/followcheck/';
+
   const { data, error } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
     redirectTo
   });
+
+  if (error) {
+    throw new Error(mapAuthError(error));
+  }
+
+  return data;
+}
+
+export async function updateUserPassword(newPassword, confirmPassword = null) {
+  const check = validatePassword(newPassword, confirmPassword);
+  if (!check.valid) {
+    throw new Error(check.message);
+  }
+
+  if (!supabaseReady()) {
+    throw new Error('Supabase no está configurado en este entorno.');
+  }
+
+  const { data, error } = await supabase.auth.updateUser({
+    password: newPassword
+  });
+
 
   if (error) {
     throw new Error(mapAuthError(error));
