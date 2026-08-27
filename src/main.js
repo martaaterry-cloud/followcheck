@@ -8,7 +8,7 @@ import {
   getRemotePreferences, upsertRemotePreferences, upsertSingleRemotePreference
 } from './repository.js';
 import {
-  getAuthUser, loginWithPassword, registerWithPassword, resetPassword,
+  getAuthUser, getAuthSession, loginWithPassword, registerWithPassword, resetPassword,
   logoutUser, subscribeToAuth
 } from './auth.js';
 import { supabaseReady } from './supabase.js';
@@ -21,9 +21,10 @@ import { initPwa, checkPwaUpdate, applyPwaUpdate, reloadApp } from './pwa.js';
 import { loadExportState, recordExportRequested, recordSuccessfulImport, isExportPending } from './exportState.js';
 import {
   reconcilePreferences, deduplicateActivity,
-  hasLocalDataToMigrate, isLocalDataMigrated, markLocalDataMigrated,
+  hasPendingLocalDataToMigrate, isLocalDataMigrated, markLocalDataMigrated, dismissMigrationPrompt,
   knownAccountToPreferenceRow
 } from './sync.js';
+
 
 const state = {
   user: null,
@@ -428,18 +429,50 @@ async function syncWithCloud(silent = false) {
   }
 }
 
-async function onUserAuthenticated(user) {
-  state.user = user;
+let isAuthSyncing = false;
 
-  // Comprobar si hay datos locales previos que no se hayan migrado
-  if (hasLocalDataToMigrate(state.snapshot, state.activity, state.knownAccounts) && !isLocalDataMigrated(user.id)) {
-    state.showMigrationPrompt = true;
-    render();
-  } else {
-    markLocalDataMigrated(user.id);
+async function onUserAuthenticated(user) {
+  if (!user || isAuthSyncing) return;
+  isAuthSyncing = true;
+  state.user = user;
+  render();
+
+  try {
+    const remoteSnapshot = await getLatestSnapshot();
+    const remoteActivity = await getActivity();
+    const remotePrefs = await getRemotePreferences(user.id);
+
+    console.log('[sync] local snapshots:', state.snapshot ? 1 : 0);
+    console.log('[sync] remote snapshots:', remoteSnapshot ? 1 : 0);
+
+    const isPending = hasPendingLocalDataToMigrate({
+      userId: user.id,
+      localSnapshot: state.snapshot,
+      localActivity: state.activity,
+      localKnownAccounts: state.knownAccounts,
+      remoteSnapshot,
+      remoteActivity,
+      remotePrefs
+    });
+
+    console.log('[sync] migration pending:', isPending);
+
+    if (isPending) {
+      state.showMigrationPrompt = true;
+      render();
+    } else {
+      markLocalDataMigrated(user.id, state.snapshot);
+      console.log('[sync] migration completed for user:', user.id.slice(0, 8));
+      await syncWithCloud(false);
+    }
+  } catch (err) {
+    console.warn('Error comprobando migración local:', err);
     await syncWithCloud(false);
+  } finally {
+    isAuthSyncing = false;
   }
 }
+
 
 function renderMigrationModal() {
   if (!state.showMigrationPrompt) return '';
@@ -1039,24 +1072,31 @@ function attachAppListeners() {
   if (btnConfirmMigration) {
     btnConfirmMigration.addEventListener('click', async () => {
       state.showMigrationPrompt = false;
+      render();
       if (state.user) {
-        markLocalDataMigrated(state.user.id);
+        if (state.snapshot && state.snapshot.followers && state.snapshot.followers.length > 0) {
+          await saveSnapshot(state.snapshot);
+        }
+        markLocalDataMigrated(state.user.id, state.snapshot);
+        console.log('[sync] migration confirmed by user:', state.user.id.slice(0, 8));
         await syncWithCloud(false);
       }
-      render();
     });
   }
 
   const btnDismissMigration = document.querySelector('#btnDismissMigration');
   if (btnDismissMigration) {
-    btnDismissMigration.addEventListener('click', () => {
+    btnDismissMigration.addEventListener('click', async () => {
       state.showMigrationPrompt = false;
-      if (state.user) {
-        markLocalDataMigrated(state.user.id);
-      }
       render();
+      if (state.user) {
+        dismissMigrationPrompt(state.user.id);
+        console.log('[sync] migration dismissed for user:', state.user.id.slice(0, 8));
+        await syncWithCloud(true);
+      }
     });
   }
+
 
   // Navegación
   document.querySelectorAll('nav button').forEach(btn => {
@@ -1340,6 +1380,7 @@ function attachAppListeners() {
 
   // Botones de Ajustes
   const checkUpdateBtn = document.querySelector('#checkUpdateBtn');
+
   if (checkUpdateBtn) {
     checkUpdateBtn.addEventListener('click', async () => {
       state.isCheckingUpdate = true;
@@ -1404,17 +1445,36 @@ async function boot() {
     });
 
     if (AUTH_ENABLED && supabaseReady()) {
-      state.user = await getAuthUser();
-      subscribeToAuth(async (event, session) => {
-        state.user = session?.user || null;
-        if (state.user) {
-          await onUserAuthenticated(state.user);
-        } else {
+      const session = await getAuthSession();
+      state.user = session?.user || null;
+      console.log('[auth] initial session:', state.user ? 'yes' : 'no');
+
+      let initialProcessed = false;
+      subscribeToAuth(async (event, currentSession) => {
+        console.log('[auth] event:', event);
+        const currentUser = currentSession?.user || null;
+
+        if (event === 'SIGNED_OUT') {
+          state.user = null;
+          state.showMigrationPrompt = false;
           render();
+          return;
+        }
+
+        if (currentUser && (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'INITIAL_SESSION')) {
+          const isNewUser = !state.user || state.user.id !== currentUser.id;
+          state.user = currentUser;
+          if (isNewUser || !initialProcessed) {
+            initialProcessed = true;
+            await onUserAuthenticated(currentUser);
+          } else {
+            render();
+          }
         }
       });
 
-      if (state.user) {
+      if (state.user && !initialProcessed) {
+        initialProcessed = true;
         await onUserAuthenticated(state.user);
       }
     }
@@ -1425,3 +1485,4 @@ async function boot() {
 }
 
 boot();
+

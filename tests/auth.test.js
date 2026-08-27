@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validatePassword } from '../src/auth.js';
+import { validatePassword, getAuthSession, getAuthUser, logoutUser } from '../src/auth.js';
 
 test('validatePassword: valida contraseña correcta', () => {
   const res = validatePassword('123456', '123456');
@@ -23,4 +23,17 @@ test('validatePassword: detecta no coincidencia en confirmación', () => {
 test('validatePassword: no exige confirmación si no se pasa', () => {
   const res = validatePassword('password123');
   assert.equal(res.valid, true);
+});
+
+test('getAuthSession y getAuthUser retornan null o estructura válida de forma segura', async () => {
+  const session = await getAuthSession();
+  const user = await getAuthUser();
+  assert.equal(typeof session === 'object', true);
+  assert.equal(typeof user === 'object', true);
+});
+
+test('logoutUser se ejecuta sin lanzar excepciones', async () => {
+  await assert.doesNotReject(async () => {
+    await logoutUser();
+  });
 });

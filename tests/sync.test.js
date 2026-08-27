@@ -5,8 +5,24 @@ import {
   preferenceRowToKnownAccount,
   reconcilePreferences,
   deduplicateActivity,
-  hasLocalDataToMigrate
+  computeSnapshotFingerprint,
+  hasPendingLocalDataToMigrate,
+  saveMigrationState,
+  getMigrationState,
+  markLocalDataMigrated,
+  dismissMigrationPrompt
 } from '../src/sync.js';
+
+// Polyfill minimal localStorage para tests en Node.js
+if (typeof globalThis.localStorage === 'undefined') {
+  const store = new Map();
+  globalThis.localStorage = {
+    getItem: (k) => store.get(k) || null,
+    setItem: (k, v) => store.set(k, String(v)),
+    removeItem: (k) => store.delete(k),
+    clear: () => store.clear()
+  };
+}
 
 test('knownAccountToPreferenceRow convierte correctamente a formato Supabase', () => {
   const row = knownAccountToPreferenceRow('user-123', 'nike', {
@@ -109,9 +125,116 @@ test('deduplicateActivity unifica y elimina eventos duplicados conservando orden
   assert.equal(merged[2].username, 'user2'); // 09:00
 });
 
-test('hasLocalDataToMigrate detecta si hay datos locales antes del primer login', () => {
-  assert.equal(hasLocalDataToMigrate(null, [], {}), false);
-  assert.equal(hasLocalDataToMigrate({ followers: ['a'] }, [], {}), true);
-  assert.equal(hasLocalDataToMigrate(null, [{ username: 'a' }], {}), true);
-  assert.equal(hasLocalDataToMigrate(null, [], { user1: {} }), true);
+test('computeSnapshotFingerprint genera un fingerprint determinista', () => {
+  const snap1 = {
+    createdAt: '2026-08-27T10:00:00Z',
+    followers: ['u1', 'u2', 'u3'],
+    following: ['u1']
+  };
+  const snap2 = {
+    createdAt: '2026-08-27T10:00:00Z',
+    followers: ['u1', 'u2', 'u3'],
+    following: ['u1']
+  };
+  const snap3 = {
+    createdAt: '2026-08-27T11:00:00Z',
+    followers: ['u1', 'u2', 'u4'],
+    following: ['u1']
+  };
+
+  const fp1 = computeSnapshotFingerprint(snap1);
+  const fp2 = computeSnapshotFingerprint(snap2);
+  const fp3 = computeSnapshotFingerprint(snap3);
+
+  assert.equal(fp1, fp2);
+  assert.notEqual(fp1, fp3);
+});
+
+test('hasPendingLocalDataToMigrate: detecta cuándo hay datos pendientes reales', () => {
+  const userId = 'user-test-pending';
+  localStorage.clear();
+
+  // Caso 1: Usuario nuevo sin datos locales ni remotos -> false
+  assert.equal(hasPendingLocalDataToMigrate({
+    userId,
+    localSnapshot: null,
+    localActivity: [],
+    localKnownAccounts: {},
+    remoteSnapshot: null,
+    remoteActivity: [],
+    remotePrefs: []
+  }), false);
+
+  // Caso 2: Usuario nuevo con snapshot local previo y 0 datos en nube -> true
+  assert.equal(hasPendingLocalDataToMigrate({
+    userId,
+    localSnapshot: { followers: ['a', 'b'], following: ['a'] },
+    localActivity: [],
+    localKnownAccounts: {},
+    remoteSnapshot: null,
+    remoteActivity: [],
+    remotePrefs: []
+  }), true);
+
+  // Caso 3: Usuario que ya tiene datos en la nube -> false (se sincroniza directo sin modal)
+  assert.equal(hasPendingLocalDataToMigrate({
+    userId,
+    localSnapshot: { followers: ['a', 'b'], following: ['a'] },
+    localActivity: [],
+    localKnownAccounts: {},
+    remoteSnapshot: { followers: ['a', 'b'], following: ['a'] },
+    remoteActivity: [],
+    remotePrefs: [{ username: 'a' }]
+  }), false);
+
+  // Caso 4: Usuario ya marcado como migrado -> false
+  markLocalDataMigrated(userId, { followers: ['a', 'b'], following: ['a'] });
+  assert.equal(hasPendingLocalDataToMigrate({
+    userId,
+    localSnapshot: { followers: ['a', 'b'], following: ['a'] },
+    localActivity: [],
+    localKnownAccounts: {},
+    remoteSnapshot: null,
+    remoteActivity: [],
+    remotePrefs: []
+  }), false);
+});
+
+test('dismissMigrationPrompt guarda estado descartado para no repetir aviso', () => {
+  const userId = 'user-test-dismiss';
+  localStorage.clear();
+
+  assert.equal(hasPendingLocalDataToMigrate({
+    userId,
+    localSnapshot: { followers: ['a'] },
+    localActivity: [],
+    localKnownAccounts: {},
+    remoteSnapshot: null
+  }), true);
+
+  dismissMigrationPrompt(userId);
+
+  assert.equal(hasPendingLocalDataToMigrate({
+    userId,
+    localSnapshot: { followers: ['a'] },
+    localActivity: [],
+    localKnownAccounts: {},
+    remoteSnapshot: null
+  }), false);
+});
+
+test('Reconciliación y migración repetida es idempotente (0 duplicados)', () => {
+  const localKnown = {
+    spotify: { famous: true, famousSource: 'manual', updatedAt: '2026-08-27T10:00:00Z' }
+  };
+  const remoteRows = [
+    { username: 'spotify', famous: true, famous_source: 'manual', updated_at: '2026-08-27T10:00:00Z' }
+  ];
+
+  const firstRun = reconcilePreferences(localKnown, remoteRows, 'user-123');
+  const secondRun = reconcilePreferences(firstRun.mergedKnownAccounts, remoteRows, 'user-123');
+
+  assert.equal(Object.keys(firstRun.mergedKnownAccounts).length, 1);
+  assert.equal(Object.keys(secondRun.mergedKnownAccounts).length, 1);
+  assert.equal(secondRun.pendingPushRows.length, 0);
 });

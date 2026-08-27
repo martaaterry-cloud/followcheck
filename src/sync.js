@@ -1,3 +1,119 @@
+const MIGRATION_STORAGE_KEY = 'followcheck_migration_state_v1';
+
+export function computeSnapshotFingerprint(snapshot) {
+  if (!snapshot || !Array.isArray(snapshot.followers)) return '';
+  const followersCount = snapshot.followers.length;
+  const followingCount = Array.isArray(snapshot.following) ? snapshot.following.length : 0;
+  const firstFollower = snapshot.followers[0] || '';
+  const lastFollower = snapshot.followers[followersCount - 1] || '';
+  const firstFollowing = snapshot.following?.[0] || '';
+  const lastFollowing = snapshot.following?.[followingCount - 1] || '';
+  const createdAt = snapshot.createdAt || snapshot.created_at || '';
+  return `${createdAt}:${followersCount}:${followingCount}:${firstFollower}:${lastFollower}:${firstFollowing}:${lastFollowing}`;
+}
+
+export function getAllMigrationStates() {
+  try {
+    const raw = localStorage.getItem(MIGRATION_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function getMigrationState(userId) {
+  if (!userId) return { migrated: false, migratedAt: null, dismissedAt: null, syncedSnapshotFingerprint: null };
+  const all = getAllMigrationStates();
+  return all[userId] || { migrated: false, migratedAt: null, dismissedAt: null, syncedSnapshotFingerprint: null };
+}
+
+export function saveMigrationState(userId, partialState) {
+  if (!userId) return;
+  try {
+    const all = getAllMigrationStates();
+    all[userId] = {
+      ...(all[userId] || { migrated: false, migratedAt: null, dismissedAt: null, syncedSnapshotFingerprint: null }),
+      ...partialState
+    };
+    localStorage.setItem(MIGRATION_STORAGE_KEY, JSON.stringify(all));
+  } catch (err) {
+    console.warn('Error al guardar estado de migración:', err);
+  }
+}
+
+export function isLocalDataMigrated(userId) {
+  if (!userId) return false;
+  const st = getMigrationState(userId);
+  return Boolean(st.migrated);
+}
+
+export function markLocalDataMigrated(userId, snapshot = null) {
+  if (!userId) return;
+  const fingerprint = computeSnapshotFingerprint(snapshot);
+  saveMigrationState(userId, {
+    migrated: true,
+    migratedAt: new Date().toISOString(),
+    syncedSnapshotFingerprint: fingerprint || undefined
+  });
+}
+
+export function dismissMigrationPrompt(userId) {
+  if (!userId) return;
+  saveMigrationState(userId, {
+    dismissedAt: new Date().toISOString()
+  });
+}
+
+export function isMigrationDismissed(userId) {
+  if (!userId) return false;
+  const st = getMigrationState(userId);
+  return Boolean(st.dismissedAt);
+}
+
+export function hasPendingLocalDataToMigrate({
+  userId,
+  localSnapshot,
+  localActivity = [],
+  localKnownAccounts = {},
+  remoteSnapshot = null,
+  remoteActivity = [],
+  remotePrefs = []
+}) {
+  if (!userId) return false;
+
+  const st = getMigrationState(userId);
+  if (st.migrated) {
+    // Si ya está marcado como migrado, solo estaría pendiente si hay un snapshot local offline nuevo
+    const localFp = computeSnapshotFingerprint(localSnapshot);
+    if (!localFp) return false;
+    const remoteFp = computeSnapshotFingerprint(remoteSnapshot);
+    if (localFp === remoteFp || localFp === st.syncedSnapshotFingerprint) {
+      return false;
+    }
+    return false; // Una vez migrado, las nuevas importaciones se sincronizan automáticamente sin modal
+  }
+
+  // Si fue descartado previamente en este dispositivo
+  if (st.dismissedAt) {
+    return false;
+  }
+
+  // Si en la nube YA existen datos para este usuario, la sincronización inicial es directa y silenciosa
+  if (remoteSnapshot && Array.isArray(remoteSnapshot.followers) && remoteSnapshot.followers.length > 0) {
+    return false;
+  }
+  if (remotePrefs && remotePrefs.length > 0) {
+    return false;
+  }
+
+  // Si no hay datos en la nube, verificar si existen datos locales offline previos reales
+  const hasLocalSnap = Boolean(localSnapshot && Array.isArray(localSnapshot.followers) && localSnapshot.followers.length > 0);
+  const hasLocalAct = Boolean(localActivity && localActivity.length > 0);
+  const hasLocalKnown = Boolean(localKnownAccounts && Object.keys(localKnownAccounts).length > 0);
+
+  return hasLocalSnap || hasLocalAct || hasLocalKnown;
+}
+
 export function knownAccountToPreferenceRow(userId, username, acc) {
   const normUser = String(username).toLowerCase().trim();
   const now = new Date().toISOString();
@@ -103,21 +219,4 @@ export function deduplicateActivity(localActivity = [], remoteActivity = []) {
   }
 
   return combined.slice(0, 500);
-}
-
-export function hasLocalDataToMigrate(snapshot, activity, knownAccounts) {
-  const hasSnapshot = Boolean(snapshot && snapshot.followers && snapshot.followers.length > 0);
-  const hasActivity = Boolean(activity && activity.length > 0);
-  const hasKnown = Boolean(knownAccounts && Object.keys(knownAccounts).length > 0);
-  return hasSnapshot || hasActivity || hasKnown;
-}
-
-export function isLocalDataMigrated(userId) {
-  if (!userId) return false;
-  return localStorage.getItem(`fc_migrated_user_${userId}`) === 'true';
-}
-
-export function markLocalDataMigrated(userId) {
-  if (!userId) return;
-  localStorage.setItem(`fc_migrated_user_${userId}`, 'true');
 }
