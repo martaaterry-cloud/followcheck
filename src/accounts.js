@@ -5,10 +5,20 @@ export function normalizeUsername(username) {
   return String(username).trim().toLowerCase();
 }
 
+export function instagramProfileUrl(username) {
+  if (!username) return null;
+  const clean = String(username).trim();
+  if (clean === '' || clean.startsWith('__deleted__')) {
+    return null;
+  }
+  return `https://www.instagram.com/${encodeURIComponent(clean)}/`;
+}
+
 export function isAutoDeleted(username) {
   const u = normalizeUsername(username);
   return u.startsWith('__deleted__');
 }
+
 
 export function createAccountRecord(username, overrides = {}) {
   const now = new Date().toISOString();

@@ -528,19 +528,18 @@ input:-webkit-autofill:active {
 
 /* Popover Flotante de Opciones */
 .account-popover {
-  position: absolute;
-  top: calc(100% - 4px);
-  right: 14px;
+  position: fixed;
   background: var(--panel2);
   border: 1px solid var(--border-focus);
   border-radius: 12px;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.65);
-  z-index: 90;
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.85);
+  z-index: 1000;
   padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 210px;
+  max-width: calc(100vw - 24px);
   animation: popoverFadeIn 0.12s ease-out;
 }
 @keyframes popoverFadeIn {
@@ -582,6 +581,249 @@ input:-webkit-autofill:active {
   color: var(--bad);
 }
 
+/* Enlaces Universales de Instagram */
+.username-link {
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+  transition: color 0.15s;
+  display: inline-block;
+}
+.username-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.username-plain {
+  color: var(--text);
+  font-weight: 600;
+  display: inline-block;
+}
+
+/* Perfil Home Card */
+.profile-header-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 18px 16px;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.profile-main-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.profile-avatar {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #1f242d, #2a303c);
+  border: 2px solid var(--border-focus);
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+.profile-info {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+.profile-info .username-link, .profile-info .username-plain {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.profile-info .display-name {
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.profile-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 4px;
+  text-align: center;
+}
+.profile-stat-box {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.profile-stat-box strong {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+.profile-stat-box span {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.profile-actions {
+  display: flex;
+  gap: 8px;
+}
+.profile-actions button {
+  flex: 1;
+  font-size: 13px;
+  padding: 10px;
+}
+.profile-last-sync {
+  font-size: 11px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+}
+
+/* Barra de Filtros de Categorías (Pills con scroll horizontal) */
+.category-pills-bar {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  margin-bottom: 12px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.category-pills-bar::-webkit-scrollbar {
+  display: none;
+}
+.category-pill {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.category-pill:hover {
+  background: var(--panel2);
+  color: var(--text);
+}
+.category-pill.active {
+  background: var(--panel3);
+  border-color: var(--border-focus);
+  color: #fff;
+}
+.category-pill .pill-count {
+  font-size: 10px;
+  opacity: 0.8;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+
+/* Badges de Categoría en Cuentas y Actividad */
+.account-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.account-category-tag {
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 4px;
+  letter-spacing: 0.1px;
+}
+
+/* Modal Organizar y Gestionar Categorías */
+.category-select-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 14px 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+.category-select-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 12px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  font-weight: 500;
+}
+.category-select-item:hover {
+  border-color: var(--border-focus);
+}
+.category-select-item input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.manage-category-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.manage-category-actions {
+  display: flex;
+  gap: 6px;
+}
+.btn-mini {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.btn-mini:hover {
+  background: var(--panel3);
+  color: var(--text);
+  border-color: var(--border-focus);
+}
+.btn-mini.danger:hover {
+  background: var(--bad-soft);
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
 /* Sugerencias de cuentas relevantes */
 .suggestions-box {
   padding: 12px 14px;
@@ -606,6 +848,7 @@ input:-webkit-autofill:active {
   flex-direction: column;
   gap: 6px;
 }
+
 .suggestion-row {
   display: flex;
   align-items: center;

@@ -186,3 +186,156 @@ export async function upsertSingleRemotePreference(userId, username, acc) {
   const row = knownAccountToPreferenceRow(userId, username, acc);
   await upsertRemotePreferences(userId, [row]);
 }
+
+// Perfil de Usuario
+export async function getRemoteProfile(userId) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId) return null;
+  try {
+    const { data, error } = await supabase
+      .from('user_profile')
+      .select('instagram_username, display_name')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (error) throw error;
+    return data ? {
+      instagramUsername: data.instagram_username || '',
+      displayName: data.display_name || ''
+    } : null;
+  } catch (err) {
+    console.warn('Error al obtener user_profile remoto:', err);
+    return null;
+  }
+}
+
+export async function saveRemoteProfile(userId, profile) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId) return;
+  try {
+    const now = new Date().toISOString();
+    const { error } = await supabase
+      .from('user_profile')
+      .upsert({
+        user_id: userId,
+        instagram_username: profile.instagramUsername || '',
+        display_name: profile.displayName || '',
+        updated_at: now
+      }, { onConflict: 'user_id' });
+
+    if (error) throw error;
+  } catch (err) {
+    console.warn('Error al guardar user_profile remoto:', err);
+  }
+}
+
+// Categorías
+export async function getRemoteCategories(userId) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId) return [];
+  try {
+    const { data, error } = await supabase
+      .from('categories')
+      .select('id, name, sort_order, created_at, updated_at')
+      .eq('user_id', userId)
+      .order('sort_order', { ascending: true });
+
+    if (error) throw error;
+    return (data || []).map(c => ({
+      id: c.id,
+      name: c.name,
+      sortOrder: c.sort_order,
+      createdAt: c.created_at,
+      updatedAt: c.updated_at
+    }));
+  } catch (err) {
+    console.warn('Error al obtener categorías remotas:', err);
+    return [];
+  }
+}
+
+export async function saveRemoteCategories(userId, categoriesList = []) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId || !categoriesList.length) return;
+  try {
+    const rows = categoriesList.map(c => ({
+      id: c.id,
+      user_id: userId,
+      name: c.name,
+      sort_order: c.sortOrder ?? 0,
+      updated_at: c.updatedAt || new Date().toISOString()
+    }));
+
+    const { error } = await supabase
+      .from('categories')
+      .upsert(rows, { onConflict: 'id' });
+
+    if (error) throw error;
+  } catch (err) {
+    console.warn('Error al guardar categorías remotas:', err);
+  }
+}
+
+export async function deleteRemoteCategory(userId, categoryId) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId || !categoryId) return;
+  try {
+    const { error } = await supabase
+      .from('categories')
+      .delete()
+      .eq('id', categoryId)
+      .eq('user_id', userId);
+
+    if (error) throw error;
+  } catch (err) {
+    console.warn('Error al eliminar categoría remota:', err);
+  }
+}
+
+// Memberships
+export async function getRemoteCategoryMemberships(userId) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId) return {};
+  try {
+    const { data, error } = await supabase
+      .from('account_category_memberships')
+      .select('username, category_id')
+      .eq('user_id', userId);
+
+    if (error) throw error;
+    const result = {};
+    for (const row of data || []) {
+      const u = String(row.username).toLowerCase().trim();
+      if (!result[u]) result[u] = [];
+      result[u].push(row.category_id);
+    }
+    return result;
+  } catch (err) {
+    console.warn('Error al obtener category memberships remotas:', err);
+    return {};
+  }
+}
+
+export async function saveRemoteAccountCategories(userId, username, categoryIds = []) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId || !username) return;
+  const normUser = String(username).toLowerCase().trim();
+  try {
+    // 1. Eliminar anteriores para ese username
+    await supabase
+      .from('account_category_memberships')
+      .delete()
+      .eq('user_id', userId)
+      .eq('username', normUser);
+
+    // 2. Insertar nuevas
+    if (categoryIds && categoryIds.length > 0) {
+      const rows = categoryIds.map(catId => ({
+        user_id: userId,
+        username: normUser,
+        category_id: catId
+      }));
+      const { error } = await supabase
+        .from('account_category_memberships')
+        .insert(rows);
+
+      if (error) throw error;
+    }
+  } catch (err) {
+    console.warn('Error al guardar account category memberships remotas:', err);
+  }
+}
+

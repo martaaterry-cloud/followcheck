@@ -5,19 +5,32 @@ import { compareSnapshots, calculateNotFollowingBack } from './compare.js';
 import {
   getLatestSnapshot, saveSnapshot,
   getActivity, appendActivity,
-  getRemotePreferences, upsertRemotePreferences, upsertSingleRemotePreference
+  getRemotePreferences, upsertRemotePreferences, upsertSingleRemotePreference,
+  getRemoteProfile, saveRemoteProfile,
+  getRemoteCategories, saveRemoteCategories, deleteRemoteCategory,
+  getRemoteCategoryMemberships, saveRemoteAccountCategories
 } from './repository.js';
 import {
   getAuthUser, getAuthSession, loginWithPassword, registerWithPassword, resetPassword, updateUserPassword,
   logoutUser, subscribeToAuth
 } from './auth.js';
-
 import { supabaseReady } from './supabase.js';
 import {
   loadLocalKnownAccounts, saveLocalKnownAccounts,
-  loadLocalSnapshot, loadLocalActivity
+  loadLocalSnapshot, loadLocalActivity,
+  loadLocalProfile, saveLocalProfile,
+  loadLocalCategories, saveLocalCategories,
+  loadLocalCategoryMemberships, saveLocalCategoryMemberships
 } from './storage.js';
-import { syncKnownAccounts, classifyAccount, categorizeNotFollowingBack } from './accounts.js';
+import {
+  syncKnownAccounts, classifyAccount, categorizeNotFollowingBack,
+  instagramProfileUrl
+} from './accounts.js';
+import {
+  initDefaultCategories, addCategory, renameCategory, deleteCategory,
+  getAccountCategories, setAccountCategories, toggleAccountCategory,
+  isAccountUncategorized, countAccountsPerCategory
+} from './categories.js';
 import { initPwa, checkPwaUpdate, applyPwaUpdate, reloadApp } from './pwa.js';
 import { loadExportState, recordExportRequested, recordSuccessfulImport, isExportPending } from './exportState.js';
 import {
@@ -26,29 +39,38 @@ import {
   knownAccountToPreferenceRow
 } from './sync.js';
 
-
 const state = {
   user: null,
   snapshot: loadLocalSnapshot(),
   activity: loadLocalActivity(),
   knownAccounts: loadLocalKnownAccounts(),
+  profile: loadLocalProfile(),
+  categories: initDefaultCategories(loadLocalCategories()),
+  categoryMemberships: loadLocalCategoryMemberships(),
   exportState: loadExportState(),
   lastImportOutcome: localStorage.getItem('fc_last_outcome') || null,
   currentView: 'homeView', // 'homeView' | 'notBackView' | 'activityView' | 'settingsView'
   notBackSearch: '',
+  selectedCategoryFilter: 'all', // 'all' | 'uncategorized' | categoryId
+  systemStateFilter: 'notBack', // 'notBack' | 'famous' | 'ignored' | 'deleted'
   activityFilter: 'all', // 'all' | 'unfollowed' | 'followed'
   activeMenuUser: null,
-  collapsedCategories: {
-    famous: true,
-    ignored: true,
-    deleted: true
-  },
+  activeMenuPosition: null, // { top, bottom, left, openUp }
+
+  // Modales
+  isOrganizeModalOpen: false,
+  organizeTargetUser: null,
+  isManageCategoriesModalOpen: false,
+  newCategoryNameInput: '',
+  editingCategoryId: null,
+  editingCategoryNameInput: '',
+
   pwaStatusText: 'Estás usando la última versión.',
   pwaUpdateAvailable: false,
   isCheckingUpdate: false,
 
-  // Autenticación tipo Orbit
-  authView: 'login', // 'login' | 'register' | 'forgot'
+  // Autenticación
+  authView: 'login', // 'login' | 'register' | 'forgot' | 'updatePassword'
   authEmail: '',
   authPassword: '',
   authConfirmPassword: '',
@@ -69,7 +91,7 @@ const state = {
   lastImportResult: null
 };
 
-const esc = s => String(s).replace(/[&<>"']/g, c => ({
+const esc = s => String(s || '').replace(/[&<>"']/g, c => ({
   '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
 }[c]));
 
@@ -89,6 +111,27 @@ function formatDate(dateStr) {
   } catch {
     return '—';
   }
+}
+
+function renderUsername(username, extraClass = '') {
+  const url = instagramProfileUrl(username);
+  const safeName = esc(username);
+  if (url) {
+    return `<a href="${url}" target="_blank" rel="noopener noreferrer" class="username-link ${extraClass}">@${safeName}</a>`;
+  }
+  return `<span class="username-plain ${extraClass}">${safeName}</span>`;
+}
+
+function renderAccountCategoryBadges(username) {
+  const catIds = getAccountCategories(state.categoryMemberships, username);
+  if (!catIds || catIds.length === 0) return '';
+  const catMap = new Map((state.categories || []).map(c => [c.id, c.name]));
+  const tags = catIds
+    .map(id => catMap.get(id))
+    .filter(Boolean)
+    .map(name => `<span class="account-category-tag">${esc(name)}</span>`)
+    .join('');
+  return tags ? `<div class="account-badges">${tags}</div>` : '';
 }
 
 // Iconos SVG Minimalistas
@@ -458,7 +501,6 @@ function attachAuthListeners() {
   }
 }
 
-
 async function syncWithCloud(silent = false) {
   if (!AUTH_ENABLED || !supabaseReady() || !state.user) return;
 
@@ -475,7 +517,6 @@ async function syncWithCloud(silent = false) {
     if (remoteSnapshot) {
       state.snapshot = remoteSnapshot;
     } else if (state.snapshot && state.snapshot.followers && state.snapshot.followers.length > 0) {
-      // Subir snapshot local si no hay en remoto
       await saveSnapshot(state.snapshot);
     }
 
@@ -492,6 +533,31 @@ async function syncWithCloud(silent = false) {
 
     if (pendingPushRows.length > 0) {
       await upsertRemotePreferences(userId, pendingPushRows);
+    }
+
+    // 4. Sincronizar Perfil de Usuario
+    const remoteProf = await getRemoteProfile(userId);
+    if (remoteProf && (remoteProf.instagramUsername || remoteProf.displayName)) {
+      state.profile = remoteProf;
+      saveLocalProfile(remoteProf);
+    } else if (state.profile.instagramUsername || state.profile.displayName) {
+      await saveRemoteProfile(userId, state.profile);
+    }
+
+    // 5. Sincronizar Categorías
+    const remoteCats = await getRemoteCategories(userId);
+    if (remoteCats && remoteCats.length > 0) {
+      state.categories = remoteCats;
+      saveLocalCategories(remoteCats);
+    } else if (state.categories && state.categories.length > 0) {
+      await saveRemoteCategories(userId, state.categories);
+    }
+
+    // 6. Sincronizar Memberships
+    const remoteMemberships = await getRemoteCategoryMemberships(userId);
+    if (remoteMemberships && Object.keys(remoteMemberships).length > 0) {
+      state.categoryMemberships = remoteMemberships;
+      saveLocalCategoryMemberships(remoteMemberships);
     }
 
     const now = new Date().toISOString();
@@ -550,7 +616,6 @@ async function onUserAuthenticated(user) {
   }
 }
 
-
 function renderMigrationModal() {
   if (!state.showMigrationPrompt) return '';
 
@@ -574,9 +639,19 @@ function renderMigrationModal() {
 }
 
 function renderAccountPopover(u, category, acc) {
-  let actionsHtml = '';
+  if (state.activeMenuUser !== u) return '';
+
+  const pos = state.activeMenuPosition;
+  const stylePos = pos?.openUp
+    ? `bottom: ${pos.bottom}px; left: ${pos.left}px;`
+    : `top: ${pos?.top || 100}px; left: ${pos?.left || 20}px;`;
+
+  let actionsHtml = `
+    <button class="popover-item" data-action="organize" data-user="${esc(u)}">Organizar categorías…</button>
+  `;
+
   if (category === 'normal') {
-    actionsHtml = `
+    actionsHtml += `
       <button class="popover-item" data-action="famous" data-user="${esc(u)}">Marcar como relevante</button>
       <button class="popover-item" data-action="ignore" data-user="${esc(u)}">Ignorar cuenta</button>
       <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">Marcar como eliminada</button>
@@ -584,7 +659,7 @@ function renderAccountPopover(u, category, acc) {
   } else if (category === 'famous') {
     const isAuto = acc?.famousSource === 'auto';
     const reasonText = acc?.autoFamousReason || 'Detectada en catálogo de cuentas relevantes';
-    actionsHtml = `
+    actionsHtml += `
       ${isAuto ? `<div class="popover-reason">${esc(reasonText)}</div>` : ''}
       ${isAuto ? `<button class="popover-item" data-action="famous-manual" data-user="${esc(u)}">Confirmar como relevante manual</button>` : ''}
       <button class="popover-item" data-action="restore" data-user="${esc(u)}">${isAuto ? 'Mover a No me siguen (descartar)' : 'Mover a No me siguen'}</button>
@@ -592,20 +667,28 @@ function renderAccountPopover(u, category, acc) {
       <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">Marcar como eliminada</button>
     `;
   } else if (category === 'ignored') {
-    actionsHtml = `
+    actionsHtml += `
       <button class="popover-item" data-action="restore" data-user="${esc(u)}">Volver a incluir (No me siguen)</button>
       <button class="popover-item" data-action="famous" data-user="${esc(u)}">Marcar como relevante</button>
       <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">Marcar como eliminada</button>
     `;
   } else if (category === 'deleted') {
-    actionsHtml = `
+    actionsHtml += `
       <button class="popover-item" data-action="restore" data-user="${esc(u)}">Restaurar como activa</button>
       <button class="popover-item" data-action="famous" data-user="${esc(u)}">Marcar como relevante</button>
       <button class="popover-item" data-action="ignore" data-user="${esc(u)}">Ignorar cuenta</button>
     `;
   }
+
+  const igUrl = instagramProfileUrl(u);
+  if (igUrl) {
+    actionsHtml += `
+      <button class="popover-item" data-action="open-ig" data-user="${esc(u)}">Abrir en Instagram</button>
+    `;
+  }
+
   return `
-    <div class="account-popover" data-popover-for="${esc(u)}">
+    <div class="account-popover" style="${stylePos}" data-popover-for="${esc(u)}">
       ${actionsHtml}
     </div>
   `;
@@ -624,20 +707,138 @@ function renderAccountRow(u, category, acc) {
   if (category === 'ignored') pillHtml = '<div class="pill muted-pill">Ignorada</div>';
   if (category === 'deleted') pillHtml = '<div class="pill bad-soft-pill">Eliminada</div>';
 
+  const categoryBadgesHtml = renderAccountCategoryBadges(u);
+
   return `
     <div class="account-row">
-      <a class="account-link" href="https://www.instagram.com/${encodeURIComponent(u)}/" target="_blank" rel="noopener noreferrer">
+      <div class="account-link grow" style="cursor: default;">
         <div class="avatar">${esc(initials(u))}</div>
-        <div class="grow">
-          <div class="name">@${esc(u)}</div>
-          <div class="sub">${category === 'famous' && acc?.famousSource === 'auto' ? esc(acc?.autoFamousReason || 'Cuenta relevante') : 'Tocar para abrir en Instagram'}</div>
+        <div class="grow" style="min-width: 0;">
+          <div class="name">${renderUsername(u)}</div>
+          <div class="sub">${category === 'famous' && acc?.famousSource === 'auto' ? esc(acc?.autoFamousReason || 'Cuenta relevante') : 'Cuenta analizada'}</div>
+          ${categoryBadgesHtml}
         </div>
-      </a>
+      </div>
       <div class="account-actions">
         ${pillHtml}
         <button class="menu-btn ${isMenuOpen ? 'active' : ''}" data-menu-user="${esc(u)}" title="Opciones" aria-label="Opciones de cuenta">⋯</button>
       </div>
       ${isMenuOpen ? renderAccountPopover(u, category, acc) : ''}
+    </div>
+  `;
+}
+
+function renderOrganizeModal() {
+  if (!state.isOrganizeModalOpen || !state.organizeTargetUser) return '';
+
+  const u = state.organizeTargetUser;
+  const assigned = getAccountCategories(state.categoryMemberships, u);
+  const categories = state.categories || [];
+
+  return `
+    <div class="modal-backdrop" id="organizeModalBackdrop">
+      <div class="modal-sheet">
+        <div class="modal-header">
+          <h3 class="modal-title">Organizar ${renderUsername(u)}</h3>
+          <button class="modal-close" id="btnCloseOrganizeModal" title="Cerrar">${icons.close}</button>
+        </div>
+        <p class="sub" style="margin-top: 0; line-height: 1.4;">
+          Selecciona las categorías en las que deseas clasificar esta cuenta:
+        </p>
+
+        <div class="category-select-list">
+          ${categories.map(cat => {
+            const isChecked = assigned.includes(cat.id);
+            return `
+              <label class="category-select-item">
+                <span>${esc(cat.name)}</span>
+                <input
+                  type="checkbox"
+                  data-cat-toggle="${esc(cat.id)}"
+                  data-cat-user="${esc(u)}"
+                  ${isChecked ? 'checked' : ''}
+                />
+              </label>
+            `;
+          }).join('')}
+        </div>
+
+        <!-- Añadir nueva categoría rápida -->
+        <div style="display: flex; gap: 6px; margin-top: 10px;">
+          <input
+            id="quickNewCatInput"
+            type="text"
+            placeholder="Nueva categoría…"
+            value="${esc(state.newCategoryNameInput)}"
+            style="flex: 1;"
+          />
+          <button id="btnQuickAddCat" class="secondary btn-sm">+ Añadir</button>
+        </div>
+
+        <div style="margin-top: 16px;">
+          <button id="btnDoneOrganize" class="primary" style="width: 100%;">Listo</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderManageCategoriesModal() {
+  if (!state.isManageCategoriesModalOpen) return '';
+
+  const categories = state.categories || [];
+
+  return `
+    <div class="modal-backdrop" id="manageCategoriesModalBackdrop">
+      <div class="modal-sheet">
+        <div class="modal-header">
+          <h3 class="modal-title">Gestionar Categorías</h3>
+          <button class="modal-close" id="btnCloseManageCategoriesModal" title="Cerrar">${icons.close}</button>
+        </div>
+        <p class="sub" style="margin-top: 0; line-height: 1.4;">
+          Crea, renombra o elimina categorías para organizar tus cuentas.
+        </p>
+
+        <div class="category-select-list">
+          ${categories.map(cat => {
+            const isEditing = state.editingCategoryId === cat.id;
+            return `
+              <div class="manage-category-item">
+                ${isEditing ? `
+                  <input
+                    type="text"
+                    id="editCategoryNameInput"
+                    value="${esc(state.editingCategoryNameInput)}"
+                    style="flex: 1; margin-right: 6px;"
+                  />
+                  <div class="manage-category-actions">
+                    <button class="btn-mini" data-cat-save-edit="${esc(cat.id)}">Guardar</button>
+                    <button class="btn-mini" data-cat-cancel-edit>Cancelar</button>
+                  </div>
+                ` : `
+                  <span style="font-weight: 500;">${esc(cat.name)}</span>
+                  <div class="manage-category-actions">
+                    <button class="btn-mini" data-cat-edit="${esc(cat.id)}" data-cat-name="${esc(cat.name)}">Renombrar</button>
+                    <button class="btn-mini danger" data-cat-delete="${esc(cat.id)}">Eliminar</button>
+                  </div>
+                `}
+              </div>
+            `;
+          }).join('')}
+        </div>
+
+        <!-- Añadir categoría -->
+        <div style="display: flex; gap: 6px; margin-top: 14px;">
+          <input
+            id="manageNewCategoryInput"
+            type="text"
+            placeholder="Nombre de categoría…"
+            value="${esc(state.newCategoryNameInput)}"
+            style="flex: 1;"
+          />
+          <button id="btnManageAddCategory" class="primary btn-sm">Crear</button>
+        </div>
+      </div>
     </div>
   `;
 }
@@ -771,17 +972,32 @@ function renderApp() {
   const snapshot = state.snapshot;
   const notBackAll = calculateNotFollowingBack(snapshot);
   const categorized = categorizeNotFollowingBack(notBackAll, state.knownAccounts);
-  
+
+  // Lista base según el estado del sistema seleccionado
+  let baseList = categorized.notFollowingBack;
+  if (state.systemStateFilter === 'famous') baseList = categorized.famous;
+  if (state.systemStateFilter === 'ignored') baseList = categorized.ignored;
+  if (state.systemStateFilter === 'deleted') baseList = categorized.deleted;
+
+  // Filtrado por categoría seleccionada
+  let categoryFiltered = baseList;
+  if (state.selectedCategoryFilter === 'uncategorized') {
+    categoryFiltered = baseList.filter(u => isAccountUncategorized(state.categoryMemberships, u));
+  } else if (state.selectedCategoryFilter !== 'all') {
+    const selectedCatId = state.selectedCategoryFilter;
+    categoryFiltered = baseList.filter(u => getAccountCategories(state.categoryMemberships, u).includes(selectedCatId));
+  }
+
+  // Filtrado por buscador
   const query = state.notBackSearch.toLowerCase().trim();
-  const normalFiltered = categorized.notFollowingBack.filter(u => u.toLowerCase().includes(query));
-  const famousFiltered = categorized.famous.filter(u => u.toLowerCase().includes(query));
-  const ignoredFiltered = categorized.ignored.filter(u => u.toLowerCase().includes(query));
-  const deletedFiltered = categorized.deleted.filter(u => u.toLowerCase().includes(query));
+  const searchFiltered = categoryFiltered.filter(u => u.toLowerCase().includes(query));
   const suggestionsFiltered = categorized.suggestions.filter(u => u.toLowerCase().includes(query));
+
+  // Conteos de categorías en la lista base actual
+  const categoryCounts = countAccountsPerCategory(baseList, state.categoryMemberships, state.categories);
 
   const unfollowedCount = state.activity.filter(e => e.type === 'unfollowed').length;
   const followedCount = state.activity.filter(e => e.type === 'followed').length;
-
   const isPending = isExportPending(state.exportState.exportRequestedAt, state.exportState.lastSuccessfulImportAt);
 
   const filteredActivity = state.activity.filter(e => {
@@ -789,6 +1005,13 @@ function renderApp() {
     if (state.activityFilter === 'followed') return e.type === 'followed';
     return true;
   });
+
+  // Iniciales y display del perfil para la Home
+  const profileInitials = state.profile.displayName
+    ? state.profile.displayName.slice(0, 2).toUpperCase()
+    : (state.profile.instagramUsername ? state.profile.instagramUsername.slice(0, 2).toUpperCase() : 'FC');
+  const profileHandle = state.profile.instagramUsername ? `@${state.profile.instagramUsername}` : '@tu_cuenta';
+  const profileUrl = instagramProfileUrl(state.profile.instagramUsername);
 
   const app = document.querySelector('#app');
   app.innerHTML = `
@@ -807,22 +1030,49 @@ function renderApp() {
         ` : ''}
       </header>
 
-      <!-- VISTA 1: INICIO -->
+      <!-- VISTA 1: INICIO (ESTILO PERFIL DE INSTAGRAM) -->
       <section id="homeView" class="${state.currentView === 'homeView' ? '' : 'hidden'}">
-        <div class="grid">
-          <div class="stat"><strong id="followersCount">${snapshot?.followers?.length ?? '—'}</strong><span>Seguidores</span></div>
-          <div class="stat"><strong id="followingCount">${snapshot?.following?.length ?? '—'}</strong><span>Seguidos</span></div>
-          <div class="stat"><strong id="notBackCount">${snapshot ? categorized.notFollowingBack.length : '—'}</strong><span>No te siguen</span></div>
-        </div>
+        <div class="profile-header-card">
+          <div class="profile-main-row">
+            <div class="profile-avatar">${esc(profileInitials)}</div>
+            <div class="profile-info">
+              ${profileUrl
+                ? `<a href="${profileUrl}" target="_blank" rel="noopener noreferrer" class="username-link" style="font-size: 18px;">${esc(profileHandle)}</a>`
+                : `<span class="username-plain" style="font-size: 18px;">${esc(profileHandle)}</span>`
+              }
+              ${state.profile.displayName ? `<div class="display-name">${esc(state.profile.displayName)}</div>` : ''}
+            </div>
+          </div>
 
-        <div class="info-banner">
-          <div>
-            <div class="label">Última actualización</div>
-            <div class="value">${formatDate(snapshot?.importedAt)}</div>
+          <div class="profile-stats-grid">
+            <div class="profile-stat-box">
+              <strong>${snapshot?.followers?.length ?? '—'}</strong>
+              <span>Seguidores</span>
+            </div>
+            <div class="profile-stat-box">
+              <strong>${snapshot?.following?.length ?? '—'}</strong>
+              <span>Seguidos</span>
+            </div>
+            <div class="profile-stat-box">
+              <strong style="color: var(--accent);">${snapshot ? categorized.notFollowingBack.length : '—'}</strong>
+              <span>No te siguen</span>
+            </div>
           </div>
-          <div>
-            <span class="badge">${state.lastImportOutcome ? esc(state.lastImportOutcome) : (snapshot ? 'Sincronizado' : 'Sin datos')}</span>
+
+          <div class="profile-actions">
+            <button id="openUpdateModalBtn" class="primary">Actualizar datos</button>
+            <button id="goToNotBackBtn" class="secondary">Revisar cuentas</button>
           </div>
+
+          ${state.lastImportOutcome ? `
+            <div class="profile-last-sync">
+              ${icons.clock} <span>${esc(state.lastImportOutcome)}</span>
+            </div>
+          ` : (snapshot ? `
+            <div class="profile-last-sync">
+              ${icons.clock} <span>Última sincronización: ${formatDate(snapshot?.importedAt)}</span>
+            </div>
+          ` : '')}
         </div>
 
         ${isPending ? `
@@ -836,24 +1086,21 @@ function renderApp() {
           </div>
         ` : ''}
 
-        <div style="margin: 16px 0 20px;">
-          <button id="openUpdateModalBtn" class="primary">Actualizar datos</button>
-        </div>
-
-        <div class="section">
+        <div class="section" style="margin-top: 18px;">
           <div class="section-title">
             <h2>Actividad reciente</h2>
             <small>${state.activity.length} cambios registrados</small>
           </div>
           <div class="card" id="activityPreview">
-            ${state.activity.length ? state.activity.slice(0, 3).map(e => `
+            ${state.activity.length ? state.activity.slice(0, 4).map(e => `
               <div class="row">
                 <div class="avatar ${e.type === 'unfollowed' ? 'down' : 'up'}">
                   ${e.type === 'unfollowed' ? icons.down : icons.up}
                 </div>
-                <div class="grow">
-                  <div class="name">@${esc(e.username)}</div>
+                <div class="grow" style="min-width: 0;">
+                  <div class="name">${renderUsername(e.username)}</div>
                   <div class="sub">${e.type === 'unfollowed' ? 'Te dejó de seguir' : 'Empezó a seguirte'}</div>
+                  ${renderAccountCategoryBadges(e.username)}
                 </div>
                 <div class="pill ${e.type === 'unfollowed' ? 'bad' : 'good'}">${formatDate(e.createdAt)}</div>
               </div>
@@ -862,18 +1109,52 @@ function renderApp() {
         </div>
       </section>
 
-      <!-- VISTA 2: NO ME SIGUEN -->
+      <!-- VISTA 2: NO ME SIGUEN (CATEGORÍAS Y ESTADOS) -->
       <section id="notBackView" class="${state.currentView === 'notBackView' ? '' : 'hidden'}">
         <div class="section">
           <div class="section-title">
-            <h2>No me siguen</h2>
-            <small id="notBackLabel">${snapshot ? normalFiltered.length + ' de ' + categorized.notFollowingBack.length + ' cuentas' : '0 cuentas'}</small>
+            <h2>Cuentas</h2>
+            <small id="notBackLabel">${snapshot ? searchFiltered.length + ' de ' + baseList.length + ' cuentas' : '0 cuentas'}</small>
           </div>
+
+          <!-- Buscador -->
           <div class="search-bar">
             <input id="searchNotBack" type="text" placeholder="Buscar por usuario…" value="${esc(state.notBackSearch)}" />
           </div>
 
-          ${snapshot && suggestionsFiltered.length ? `
+          <!-- Pestañas de Estado del Sistema -->
+          <div class="filter-group" style="margin-bottom: 10px;">
+            <button class="filter-btn ${state.systemStateFilter === 'notBack' ? 'active' : ''}" data-state-filter="notBack">
+              No me siguen (${categorized.notFollowingBack.length})
+            </button>
+            <button class="filter-btn ${state.systemStateFilter === 'famous' ? 'active' : ''}" data-state-filter="famous">
+              Relevantes (${categorized.famous.length})
+            </button>
+            <button class="filter-btn ${state.systemStateFilter === 'ignored' ? 'active' : ''}" data-state-filter="ignored">
+              Ignoradas (${categorized.ignored.length})
+            </button>
+            <button class="filter-btn ${state.systemStateFilter === 'deleted' ? 'active' : ''}" data-state-filter="deleted">
+              Eliminadas (${categorized.deleted.length})
+            </button>
+          </div>
+
+          <!-- Barra horizontal de Categorías Personalizadas (Pills) -->
+          <div class="category-pills-bar">
+            <button class="category-pill ${state.selectedCategoryFilter === 'all' ? 'active' : ''}" data-cat-filter="all">
+              Todos <span class="pill-count">${categoryCounts.all}</span>
+            </button>
+            <button class="category-pill ${state.selectedCategoryFilter === 'uncategorized' ? 'active' : ''}" data-cat-filter="uncategorized">
+              Sin clasificar <span class="pill-count">${categoryCounts.uncategorized}</span>
+            </button>
+            ${(state.categories || []).map(cat => `
+              <button class="category-pill ${state.selectedCategoryFilter === cat.id ? 'active' : ''}" data-cat-filter="${esc(cat.id)}">
+                ${esc(cat.name)} <span class="pill-count">${categoryCounts[cat.id] || 0}</span>
+              </button>
+            `).join('')}
+          </div>
+
+          <!-- Sugerencias de cuentas relevantes -->
+          ${snapshot && state.systemStateFilter === 'notBack' && suggestionsFiltered.length ? `
             <div class="suggestions-box card">
               <div class="suggestions-header">
                 <div class="grow">
@@ -886,8 +1167,8 @@ function renderApp() {
                   const sugAcc = state.knownAccounts[sugUser];
                   return `
                     <div class="suggestion-row">
-                      <div class="grow">
-                        <div class="name">@${esc(sugUser)}</div>
+                      <div class="grow" style="min-width: 0;">
+                        <div class="name">${renderUsername(sugUser)}</div>
                         <div class="sub">${esc(sugAcc?.autoFamousReason || 'Cuenta pública')}</div>
                       </div>
                       <div class="suggestion-actions">
@@ -901,66 +1182,22 @@ function renderApp() {
             </div>
           ` : ''}
 
-          <!-- 1. Lista principal: No me siguen -->
+          <!-- Lista de Cuentas Filtradas -->
           <div class="card" id="notBackList">
             ${snapshot ? (
-              normalFiltered.length ? normalFiltered.map(u => renderAccountRow(u, 'normal', state.knownAccounts[u])).join('') : '<div class="empty">No se encontraron cuentas en esta sección.</div>'
+              searchFiltered.length ? searchFiltered.map(u => {
+                let catType = 'normal';
+                if (state.systemStateFilter === 'famous') catType = 'famous';
+                if (state.systemStateFilter === 'ignored') catType = 'ignored';
+                if (state.systemStateFilter === 'deleted') catType = 'deleted';
+                return renderAccountRow(u, catType, state.knownAccounts[u]);
+              }).join('') : '<div class="empty">No se encontraron cuentas en este filtro.</div>'
             ) : '<div class="empty">Actualiza tus datos para empezar.</div>'}
           </div>
-
-          ${snapshot ? `
-            <!-- 2. Categoría: Famosas / Relevantes -->
-            <div class="category-group">
-              <div class="category-header ${!state.collapsedCategories.famous ? 'open' : ''}" data-toggle-cat="famous">
-                <div class="category-title">
-                  <span>Famosas / relevantes</span>
-                </div>
-                <div class="category-meta">
-                  <span class="category-count">${famousFiltered.length}</span>
-                  ${icons.chevron}
-                </div>
-              </div>
-              <div class="card category-card ${state.collapsedCategories.famous ? 'hidden' : ''}">
-                ${famousFiltered.length ? famousFiltered.map(u => renderAccountRow(u, 'famous', state.knownAccounts[u])).join('') : '<div class="empty">No hay cuentas marcadas como famosas.</div>'}
-              </div>
-            </div>
-
-            <!-- 3. Categoría: Ignoradas -->
-            <div class="category-group">
-              <div class="category-header ${!state.collapsedCategories.ignored ? 'open' : ''}" data-toggle-cat="ignored">
-                <div class="category-title">
-                  <span>Ignoradas</span>
-                </div>
-                <div class="category-meta">
-                  <span class="category-count">${ignoredFiltered.length}</span>
-                  ${icons.chevron}
-                </div>
-              </div>
-              <div class="card category-card ${state.collapsedCategories.ignored ? 'hidden' : ''}">
-                ${ignoredFiltered.length ? ignoredFiltered.map(u => renderAccountRow(u, 'ignored', state.knownAccounts[u])).join('') : '<div class="empty">No hay cuentas ignoradas.</div>'}
-              </div>
-            </div>
-
-            <!-- 4. Categoría: Cuentas eliminadas -->
-            <div class="category-group">
-              <div class="category-header ${!state.collapsedCategories.deleted ? 'open' : ''}" data-toggle-cat="deleted">
-                <div class="category-title">
-                  <span>Cuentas eliminadas</span>
-                </div>
-                <div class="category-meta">
-                  <span class="category-count">${deletedFiltered.length}</span>
-                  ${icons.chevron}
-                </div>
-              </div>
-              <div class="card category-card ${state.collapsedCategories.deleted ? 'hidden' : ''}">
-                ${deletedFiltered.length ? deletedFiltered.map(u => renderAccountRow(u, 'deleted', state.knownAccounts[u])).join('') : '<div class="empty">No hay cuentas eliminadas.</div>'}
-              </div>
-            </div>
-          ` : ''}
         </div>
       </section>
 
-      <!-- VISTA 3: ACTIVIDAD -->
+      <!-- VISTA 3: HISTORIAL DE ACTIVIDAD -->
       <section id="activityView" class="${state.currentView === 'activityView' ? '' : 'hidden'}">
         <div class="section">
           <div class="section-title">
@@ -986,9 +1223,10 @@ function renderApp() {
                 <div class="avatar ${e.type === 'unfollowed' ? 'down' : 'up'}">
                   ${e.type === 'unfollowed' ? icons.down : icons.up}
                 </div>
-                <div class="grow">
-                  <div class="name">@${esc(e.username)}</div>
+                <div class="grow" style="min-width: 0;">
+                  <div class="name">${renderUsername(e.username)}</div>
                   <div class="sub">${e.type === 'unfollowed' ? 'Te dejó de seguir' : 'Empezó a seguirte'}</div>
+                  ${renderAccountCategoryBadges(e.username)}
                 </div>
                 <div class="pill ${e.type === 'unfollowed' ? 'bad' : 'good'}">${formatDate(e.createdAt)}</div>
               </div>
@@ -1003,6 +1241,32 @@ function renderApp() {
           <div class="section-title">
             <h2>Ajustes</h2>
             <small>Configuración y estado</small>
+          </div>
+
+          <!-- Perfil de Instagram Propio -->
+          <div class="card settings-card">
+            <div class="settings-title">Perfil de Instagram</div>
+            <p class="sub" style="margin: 0 0 12px;">Configura tu usuario para personalizar la cabecera de la app.</p>
+            <form id="profileForm" style="display: flex; flex-direction: column; gap: 10px;">
+              <div class="auth-field">
+                <label class="auth-label" for="settingIgUsername">Usuario de Instagram (@)</label>
+                <input id="settingIgUsername" type="text" placeholder="ej. marta_99" value="${esc(state.profile.instagramUsername)}" />
+              </div>
+              <div class="auth-field">
+                <label class="auth-label" for="settingDisplayName">Nombre visible (opcional)</label>
+                <input id="settingDisplayName" type="text" placeholder="ej. Marta" value="${esc(state.profile.displayName)}" />
+              </div>
+              <button type="submit" class="secondary" style="align-self: flex-start; margin-top: 4px;">Guardar perfil</button>
+            </form>
+          </div>
+
+          <!-- Organización y Categorías -->
+          <div class="card settings-card">
+            <div class="settings-title">Organización y Categorías</div>
+            <p class="sub" style="margin: 0 0 12px;">Crea categorías personalizadas para clasificar tus cuentas seguidas.</p>
+            <button class="secondary" id="btnOpenManageCategoriesModal" style="width: 100%;">
+              Gestionar categorías (${state.categories.length})
+            </button>
           </div>
 
           <!-- Sección Cuenta -->
@@ -1099,40 +1363,393 @@ function renderApp() {
         </div>
       </section>
 
+      <!-- MODALES -->
       ${renderUpdateModal()}
       ${renderMigrationModal()}
-    </main>
+      ${renderOrganizeModal()}
+      ${renderManageCategoriesModal()}
 
-    <nav>
-      <button class="${state.currentView === 'homeView' ? 'active' : ''}" data-view="homeView">
-        ${icons.home}
-        Inicio
-      </button>
-      <button class="${state.currentView === 'notBackView' ? 'active' : ''}" data-view="notBackView">
-        ${icons.users}
-        No me siguen
-      </button>
-      <button class="${state.currentView === 'activityView' ? 'active' : ''}" data-view="activityView">
-        ${icons.activity}
-        Actividad
-      </button>
-      <button class="${state.currentView === 'settingsView' ? 'active' : ''}" data-view="settingsView">
-        ${icons.settings}
-        Ajustes
-      </button>
-    </nav>
+      <!-- NAVEGACIÓN INFERIOR -->
+      <nav>
+        <button class="${state.currentView === 'homeView' ? 'active' : ''}" data-view="homeView">
+          ${icons.home}
+          <span>Inicio</span>
+        </button>
+        <button class="${state.currentView === 'notBackView' ? 'active' : ''}" data-view="notBackView">
+          ${icons.users}
+          <span>Cuentas</span>
+        </button>
+        <button class="${state.currentView === 'activityView' ? 'active' : ''}" data-view="activityView">
+          ${icons.activity}
+          <span>Actividad</span>
+        </button>
+        <button class="${state.currentView === 'settingsView' ? 'active' : ''}" data-view="settingsView">
+          ${icons.settings}
+          <span>Ajustes</span>
+        </button>
+      </nav>
+    </main>
   `;
 
-  attachAppListeners();
+  attachListeners();
 }
 
-function attachAppListeners() {
+function attachListeners() {
+  // Búsqueda
+  const searchInput = document.querySelector('#searchNotBack');
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => {
+      state.notBackSearch = e.target.value;
+      render();
+    });
+  }
+
+  // Filtros de Actividad
+  document.querySelectorAll('[data-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.activityFilter = btn.dataset.filter;
+      render();
+    });
+  });
+
+  // Filtros de Estado del Sistema en Cuentas
+  document.querySelectorAll('[data-state-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.systemStateFilter = btn.dataset.stateFilter;
+      state.activeMenuUser = null;
+      render();
+    });
+  });
+
+  // Filtros de Categorías (Pills)
+  document.querySelectorAll('[data-cat-filter]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.selectedCategoryFilter = btn.dataset.catFilter;
+      state.activeMenuUser = null;
+      render();
+    });
+  });
+
+  // Botón "Revisar cuentas" desde la Home
+  const goToNotBackBtn = document.querySelector('#goToNotBackBtn');
+  if (goToNotBackBtn) {
+    goToNotBackBtn.addEventListener('click', () => {
+      state.currentView = 'notBackView';
+      render();
+    });
+  }
+
+  // Acciones de Sugerencias
+  document.querySelectorAll('[data-sug-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const action = btn.dataset.sugAction;
+      const user = btn.dataset.user;
+      if (!user) return;
+
+      if (action === 'famous') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
+      } else if (action === 'dismiss') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { dismissSuggestion: true });
+      }
+
+      saveLocalKnownAccounts(state.knownAccounts);
+      render();
+
+      if (AUTH_ENABLED && state.user && state.knownAccounts[user]) {
+        upsertSingleRemotePreference(state.user.id, user, state.knownAccounts[user]);
+      }
+    });
+  });
+
+  // Botones de Menú Contextual (Cálculo dinámico de posición fija)
+  document.querySelectorAll('[data-menu-user]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const user = btn.dataset.menuUser;
+      if (state.activeMenuUser === user) {
+        state.activeMenuUser = null;
+        state.activeMenuPosition = null;
+      } else {
+        const rect = btn.getBoundingClientRect();
+        const spaceBelow = window.innerHeight - rect.bottom;
+        const openUp = spaceBelow < 250 && rect.top > 250;
+
+        state.activeMenuUser = user;
+        state.activeMenuPosition = {
+          top: rect.bottom + 4,
+          bottom: window.innerHeight - rect.top + 4,
+          left: Math.max(10, Math.min(rect.right - 210, window.innerWidth - 220)),
+          openUp
+        };
+      }
+      render();
+    });
+  });
+
+  // Acciones dentro del menú desplegable
+  document.querySelectorAll('[data-action]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const action = btn.dataset.action;
+      const user = btn.dataset.user;
+
+      if (!user) return;
+
+      if (action === 'organize') {
+        state.activeMenuUser = null;
+        state.organizeTargetUser = user;
+        state.isOrganizeModalOpen = true;
+        state.newCategoryNameInput = '';
+        render();
+        return;
+      }
+
+      if (action === 'open-ig') {
+        state.activeMenuUser = null;
+        render();
+        const url = instagramProfileUrl(user);
+        if (url) window.open(url, '_blank', 'noopener,noreferrer');
+        return;
+      }
+
+      if (action === 'famous') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
+      } else if (action === 'famous-manual') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
+      } else if (action === 'ignore') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { ignored: true });
+      } else if (action === 'delete') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { deleted: true });
+      } else if (action === 'restore') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { restore: true });
+      }
+
+      saveLocalKnownAccounts(state.knownAccounts);
+      state.activeMenuUser = null;
+      state.activeMenuPosition = null;
+      render();
+
+      if (AUTH_ENABLED && state.user && state.knownAccounts[user]) {
+        upsertSingleRemotePreference(state.user.id, user, state.knownAccounts[user]);
+      }
+    });
+  });
+
+  // Modal Organizar Cuenta
+  const btnCloseOrganizeModal = document.querySelector('#btnCloseOrganizeModal');
+  const btnDoneOrganize = document.querySelector('#btnDoneOrganize');
+  const organizeModalBackdrop = document.querySelector('#organizeModalBackdrop');
+
+  const closeOrganizeModal = () => {
+    state.isOrganizeModalOpen = false;
+    state.organizeTargetUser = null;
+    render();
+  };
+
+  if (btnCloseOrganizeModal) btnCloseOrganizeModal.addEventListener('click', closeOrganizeModal);
+  if (btnDoneOrganize) btnDoneOrganize.addEventListener('click', closeOrganizeModal);
+  if (organizeModalBackdrop) {
+    organizeModalBackdrop.addEventListener('click', (e) => {
+      if (e.target === organizeModalBackdrop) closeOrganizeModal();
+    });
+  }
+
+  // Toggles de categorías dentro del modal Organizar
+  document.querySelectorAll('[data-cat-toggle]').forEach(chk => {
+    chk.addEventListener('change', async () => {
+      const catId = chk.dataset.catToggle;
+      const user = chk.dataset.catUser;
+      if (!user || !catId) return;
+
+      state.categoryMemberships = toggleAccountCategory(state.categoryMemberships, user, catId);
+      saveLocalCategoryMemberships(state.categoryMemberships);
+      render();
+
+      if (AUTH_ENABLED && state.user) {
+        const assigned = getAccountCategories(state.categoryMemberships, user);
+        await saveRemoteAccountCategories(state.user.id, user, assigned);
+      }
+    });
+  });
+
+  // Añadir categoría rápida desde modal Organizar
+  const quickNewCatInput = document.querySelector('#quickNewCatInput');
+  const btnQuickAddCat = document.querySelector('#btnQuickAddCat');
+  if (quickNewCatInput) {
+    quickNewCatInput.addEventListener('input', (e) => {
+      state.newCategoryNameInput = e.target.value;
+    });
+  }
+  if (btnQuickAddCat && quickNewCatInput) {
+    btnQuickAddCat.addEventListener('click', async () => {
+      const name = quickNewCatInput.value.trim();
+      if (!name) return;
+      try {
+        state.categories = addCategory(state.categories, name);
+        saveLocalCategories(state.categories);
+        const newCat = state.categories.find(c => c.name.toLowerCase() === name.toLowerCase());
+
+        if (newCat && state.organizeTargetUser) {
+          state.categoryMemberships = toggleAccountCategory(state.categoryMemberships, state.organizeTargetUser, newCat.id);
+          saveLocalCategoryMemberships(state.categoryMemberships);
+        }
+        state.newCategoryNameInput = '';
+        render();
+
+        if (AUTH_ENABLED && state.user) {
+          await saveRemoteCategories(state.user.id, state.categories);
+          if (state.organizeTargetUser) {
+            const assigned = getAccountCategories(state.categoryMemberships, state.organizeTargetUser);
+            await saveRemoteAccountCategories(state.user.id, state.organizeTargetUser, assigned);
+          }
+        }
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  }
+
+  // Modal Gestionar Categorías
+  const btnOpenManageCategoriesModal = document.querySelector('#btnOpenManageCategoriesModal');
+  if (btnOpenManageCategoriesModal) {
+    btnOpenManageCategoriesModal.addEventListener('click', () => {
+      state.isManageCategoriesModalOpen = true;
+      state.newCategoryNameInput = '';
+      state.editingCategoryId = null;
+      render();
+    });
+  }
+
+  const btnCloseManageCategoriesModal = document.querySelector('#btnCloseManageCategoriesModal');
+  const manageCategoriesModalBackdrop = document.querySelector('#manageCategoriesModalBackdrop');
+  const closeManageCategoriesModal = () => {
+    state.isManageCategoriesModalOpen = false;
+    state.editingCategoryId = null;
+    render();
+  };
+  if (btnCloseManageCategoriesModal) btnCloseManageCategoriesModal.addEventListener('click', closeManageCategoriesModal);
+  if (manageCategoriesModalBackdrop) {
+    manageCategoriesModalBackdrop.addEventListener('click', (e) => {
+      if (e.target === manageCategoriesModalBackdrop) closeManageCategoriesModal();
+    });
+  }
+
+  // Crear categoría desde Gestionar
+  const manageNewCategoryInput = document.querySelector('#manageNewCategoryInput');
+  const btnManageAddCategory = document.querySelector('#btnManageAddCategory');
+  if (manageNewCategoryInput) {
+    manageNewCategoryInput.addEventListener('input', (e) => {
+      state.newCategoryNameInput = e.target.value;
+    });
+  }
+  if (btnManageAddCategory && manageNewCategoryInput) {
+    btnManageAddCategory.addEventListener('click', async () => {
+      const name = manageNewCategoryInput.value.trim();
+      if (!name) return;
+      try {
+        state.categories = addCategory(state.categories, name);
+        saveLocalCategories(state.categories);
+        state.newCategoryNameInput = '';
+        render();
+
+        if (AUTH_ENABLED && state.user) {
+          await saveRemoteCategories(state.user.id, state.categories);
+        }
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  }
+
+  // Renombrar / Eliminar categoría en Gestionar
+  document.querySelectorAll('[data-cat-edit]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.editingCategoryId = btn.dataset.catEdit;
+      state.editingCategoryNameInput = btn.dataset.catName;
+      render();
+    });
+  });
+
+  const editCategoryNameInput = document.querySelector('#editCategoryNameInput');
+  if (editCategoryNameInput) {
+    editCategoryNameInput.addEventListener('input', (e) => {
+      state.editingCategoryNameInput = e.target.value;
+    });
+  }
+
+  document.querySelectorAll('[data-cat-save-edit]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const catId = btn.dataset.catSaveEdit;
+      const newName = state.editingCategoryNameInput.trim();
+      if (!newName) return;
+      try {
+        state.categories = renameCategory(state.categories, catId, newName);
+        saveLocalCategories(state.categories);
+        state.editingCategoryId = null;
+        render();
+
+        if (AUTH_ENABLED && state.user) {
+          await saveRemoteCategories(state.user.id, state.categories);
+        }
+      } catch (err) {
+        alert(err.message);
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-cat-cancel-edit]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.editingCategoryId = null;
+      render();
+    });
+  });
+
+  document.querySelectorAll('[data-cat-delete]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const catId = btn.dataset.catDelete;
+      if (!confirm('¿Eliminar esta categoría? (Las cuentas clasificadas no se borrarán)')) return;
+
+      const result = deleteCategory(state.categories, state.categoryMemberships, catId);
+      state.categories = result.categories;
+      state.categoryMemberships = result.memberships;
+      saveLocalCategories(state.categories);
+      saveLocalCategoryMemberships(state.categoryMemberships);
+      render();
+
+      if (AUTH_ENABLED && state.user) {
+        await deleteRemoteCategory(state.user.id, catId);
+      }
+    });
+  });
+
+  // Guardar Perfil en Ajustes
+  const profileForm = document.querySelector('#profileForm');
+  if (profileForm) {
+    profileForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const igUser = document.querySelector('#settingIgUsername')?.value.replace(/^@/, '').trim() || '';
+      const dispName = document.querySelector('#settingDisplayName')?.value.trim() || '';
+
+      state.profile = {
+        instagramUsername: igUser,
+        displayName: dispName
+      };
+      saveLocalProfile(state.profile);
+      render();
+
+      if (AUTH_ENABLED && state.user) {
+        await saveRemoteProfile(state.user.id, state.profile);
+      }
+      alert('Perfil guardado correctamente.');
+    });
+  }
+
+  // Logout y Sync
   const logoutBtn = document.querySelector('#logoutBtn');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', async () => {
       await logoutUser();
       state.user = null;
-      state.syncStatus = 'idle';
       render();
     });
   }
@@ -1144,7 +1761,7 @@ function attachAppListeners() {
     });
   }
 
-  // Controles del Modal de Migración
+  // Botones de Migración Local
   const btnConfirmMigration = document.querySelector('#btnConfirmMigration');
   if (btnConfirmMigration) {
     btnConfirmMigration.addEventListener('click', async () => {
@@ -1174,119 +1791,17 @@ function attachAppListeners() {
     });
   }
 
-
   // Navegación
   document.querySelectorAll('nav button').forEach(btn => {
     btn.addEventListener('click', () => {
       state.currentView = btn.dataset.view;
       state.activeMenuUser = null;
+      state.activeMenuPosition = null;
       render();
     });
   });
 
-  // Filtros de actividad
-  document.querySelectorAll('.filter-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.activityFilter = btn.dataset.filter;
-      render();
-    });
-  });
-
-  // Búsqueda No me siguen
-  const searchInput = document.querySelector('#searchNotBack');
-  if (searchInput) {
-    searchInput.addEventListener('input', (e) => {
-      state.notBackSearch = e.target.value;
-      state.activeMenuUser = null;
-      render();
-      const newSearchInput = document.querySelector('#searchNotBack');
-      if (newSearchInput) {
-        newSearchInput.focus();
-        newSearchInput.setSelectionRange(newSearchInput.value.length, newSearchInput.value.length);
-      }
-    });
-  }
-
-  // Toggles de Acordeones
-  document.querySelectorAll('[data-toggle-cat]').forEach(header => {
-    header.addEventListener('click', () => {
-      const cat = header.dataset.toggleCat;
-      if (cat && state.collapsedCategories[cat] !== undefined) {
-        state.collapsedCategories[cat] = !state.collapsedCategories[cat];
-        render();
-      }
-    });
-  });
-
-  // Botón de menú en cada fila de cuenta
-  document.querySelectorAll('[data-menu-user]').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const user = btn.dataset.menuUser;
-      state.activeMenuUser = state.activeMenuUser === user ? null : user;
-      render();
-    });
-  });
-
-  // Acciones en sugerencias rápidas
-  document.querySelectorAll('[data-sug-action]').forEach(sugBtn => {
-    sugBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const action = sugBtn.dataset.sugAction;
-      const user = sugBtn.dataset.user;
-
-      if (!user) return;
-
-      if (action === 'famous') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
-      } else if (action === 'dismiss') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { dismissSuggestion: true });
-      }
-
-      saveLocalKnownAccounts(state.knownAccounts);
-      render();
-
-      if (AUTH_ENABLED && state.user && state.knownAccounts[user]) {
-        upsertSingleRemotePreference(state.user.id, user, state.knownAccounts[user]);
-      }
-    });
-  });
-
-  // Acciones dentro del menú contextual
-  document.querySelectorAll('.popover-item').forEach(actionBtn => {
-    actionBtn.addEventListener('click', async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const action = actionBtn.dataset.action;
-      const user = actionBtn.dataset.user;
-
-      if (!user) return;
-
-      if (action === 'famous') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
-      } else if (action === 'famous-manual') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true, famousSource: 'manual' });
-      } else if (action === 'ignore') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { ignored: true });
-      } else if (action === 'delete') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { deleted: true });
-      } else if (action === 'restore') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { restore: true });
-      }
-
-      saveLocalKnownAccounts(state.knownAccounts);
-      state.activeMenuUser = null;
-      render();
-
-      if (AUTH_ENABLED && state.user && state.knownAccounts[user]) {
-        upsertSingleRemotePreference(state.user.id, user, state.knownAccounts[user]);
-      }
-    });
-  });
-
-  // Botones para abrir Modal de Actualización
+  // Modal de Actualización Guiada
   const openUpdateModalBtn = document.querySelector('#openUpdateModalBtn');
   if (openUpdateModalBtn) {
     openUpdateModalBtn.addEventListener('click', () => {
@@ -1307,7 +1822,6 @@ function attachAppListeners() {
     });
   }
 
-  // Controles del Modal de Actualización
   const btnCloseModalHeader = document.querySelector('#btnCloseModalHeader');
   if (btnCloseModalHeader) {
     btnCloseModalHeader.addEventListener('click', () => {
@@ -1389,7 +1903,7 @@ function attachAppListeners() {
         let events = [];
 
         if (comparison.isInitial) {
-          outcomeText = `Estado inicial guardado: ${current.followers.length} seguidores · ${current.following.length} seguidos`;
+          outcomeText = `Estado inicial: ${current.followers.length} seguidores · ${current.following.length} seguidos`;
         } else {
           const now = new Date().toISOString();
           events = [
@@ -1409,11 +1923,9 @@ function attachAppListeners() {
           await appendActivity(events);
         }
 
-        // Sincronizar known accounts
         state.knownAccounts = syncKnownAccounts(state.knownAccounts, current);
         saveLocalKnownAccounts(state.knownAccounts);
 
-        // Si está conectado, sincronizar preferencias
         if (AUTH_ENABLED && state.user) {
           const rows = Object.entries(state.knownAccounts).map(([u, acc]) =>
             knownAccountToPreferenceRow(state.user.id, u, acc)
@@ -1421,7 +1933,6 @@ function attachAppListeners() {
           upsertRemotePreferences(state.user.id, rows);
         }
 
-        // Registrar fecha de importación exitosa
         recordSuccessfulImport();
         state.exportState = loadExportState();
 
@@ -1455,9 +1966,8 @@ function attachAppListeners() {
     });
   }
 
-  // Botones de Ajustes
+  // Botones de Actualización PWA
   const checkUpdateBtn = document.querySelector('#checkUpdateBtn');
-
   if (checkUpdateBtn) {
     checkUpdateBtn.addEventListener('click', async () => {
       state.isCheckingUpdate = true;
@@ -1489,13 +1999,22 @@ function attachAppListeners() {
   }
 }
 
-// Cerrar menú emergente si se hace click fuera
+// Cerrar menú emergente al hacer click fuera o al hacer scroll
 document.addEventListener('click', (e) => {
   if (state.activeMenuUser && !e.target.closest('.account-popover') && !e.target.closest('[data-menu-user]')) {
     state.activeMenuUser = null;
+    state.activeMenuPosition = null;
     render();
   }
 });
+
+window.addEventListener('scroll', () => {
+  if (state.activeMenuUser) {
+    state.activeMenuUser = null;
+    state.activeMenuPosition = null;
+    render();
+  }
+}, { passive: true });
 
 function render() {
   if (AUTH_ENABLED && supabaseReady() && !state.user) {
@@ -1510,7 +2029,15 @@ async function boot() {
     state.knownAccounts = loadLocalKnownAccounts();
     state.snapshot = loadLocalSnapshot();
     state.activity = loadLocalActivity();
+    state.profile = loadLocalProfile();
+    state.categories = initDefaultCategories(loadLocalCategories());
+    state.categoryMemberships = loadLocalCategoryMemberships();
     state.exportState = loadExportState();
+
+    // Guardar categorías por defecto si no existían
+    if (!loadLocalCategories()) {
+      saveLocalCategories(state.categories);
+    }
 
     // Inicializar ciclo de vida de PWA
     initPwa(({ status, updateAvailable }) => {
@@ -1522,7 +2049,6 @@ async function boot() {
     });
 
     if (AUTH_ENABLED && supabaseReady()) {
-      // Detección de enlace de recuperación en URL
       if (typeof window !== 'undefined' && (window.location.hash.includes('type=recovery') || window.location.search.includes('type=recovery'))) {
         state.authView = 'updatePassword';
       }
@@ -1572,7 +2098,6 @@ async function boot() {
         await onUserAuthenticated(state.user);
       }
     }
-
   } catch (err) {
     console.error('Boot error:', err);
   }
@@ -1580,4 +2105,3 @@ async function boot() {
 }
 
 boot();
-
