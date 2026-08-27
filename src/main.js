@@ -1,5 +1,5 @@
 import './styles.css';
-import { APP_VERSION, BUILD_ID, AUTH_ENABLED } from './config.js';
+import { APP_VERSION, BUILD_ID, AUTH_ENABLED, META_ACCOUNTS_CENTER_URL } from './config.js';
 import { parseInstagramZip } from './instagramImport.js';
 import { compareSnapshots, calculateNotFollowingBack } from './compare.js';
 import { getLatestSnapshot, saveSnapshot, getActivity, appendActivity } from './repository.js';
@@ -8,12 +8,14 @@ import { supabaseReady } from './supabase.js';
 import { loadLocalKnownAccounts, saveLocalKnownAccounts } from './storage.js';
 import { syncKnownAccounts, classifyAccount, categorizeNotFollowingBack } from './accounts.js';
 import { initPwa, checkPwaUpdate, applyPwaUpdate, reloadApp } from './pwa.js';
+import { loadExportState, recordExportRequested, recordSuccessfulImport, isExportPending } from './exportState.js';
 
 const state = {
   user: null,
   snapshot: null,
   activity: [],
   knownAccounts: loadLocalKnownAccounts(),
+  exportState: loadExportState(),
   lastImportOutcome: localStorage.getItem('fc_last_outcome') || null,
   currentView: 'homeView', // 'homeView' | 'notBackView' | 'activityView' | 'settingsView'
   notBackSearch: '',
@@ -27,7 +29,14 @@ const state = {
   },
   pwaStatusText: 'Estás usando la última versión.',
   pwaUpdateAvailable: false,
-  isCheckingUpdate: false
+  isCheckingUpdate: false,
+
+  // Modal de actualización guiada
+  isUpdateModalOpen: false,
+  updateModalStep: 1, // 1: Solicitud, 2: Importación, 3: Resumen
+  updateModalError: '',
+  isAnalyzingZip: false,
+  lastImportResult: null
 };
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({
@@ -51,6 +60,19 @@ function formatDate(dateStr) {
     return '—';
   }
 }
+
+// Iconos SVG Minimalistas
+const icons = {
+  home: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>`,
+  users: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>`,
+  activity: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>`,
+  settings: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>`,
+  down: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"></polyline></svg>`,
+  up: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"></polyline></svg>`,
+  chevron: `<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>`,
+  clock: `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>`,
+  close: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`
+};
 
 let cooldownTimer = null;
 let cooldownSeconds = 0;
@@ -152,31 +174,31 @@ function renderAccountPopover(u, category, acc) {
   let actionsHtml = '';
   if (category === 'normal') {
     actionsHtml = `
-      <button class="popover-item" data-action="famous" data-user="${esc(u)}">⭐ Marcar como famosa</button>
-      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">👁️ Ignorar cuenta</button>
-      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">🗑️ Marcar como eliminada</button>
+      <button class="popover-item" data-action="famous" data-user="${esc(u)}">Marcar como relevante</button>
+      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">Ignorar cuenta</button>
+      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">Marcar como eliminada</button>
     `;
   } else if (category === 'famous') {
     const isAuto = acc?.famousSource === 'auto';
-    const reasonText = acc?.autoFamousReason || 'Detectada automáticamente como cuenta conocida';
+    const reasonText = acc?.autoFamousReason || 'Detectada en catálogo de cuentas relevantes';
     actionsHtml = `
-      ${isAuto ? `<div class="popover-reason">✨ ${esc(reasonText)}</div>` : ''}
-      ${isAuto ? `<button class="popover-item" data-action="famous-manual" data-user="${esc(u)}">⭐ Confirmar como marcada por ti</button>` : ''}
-      <button class="popover-item" data-action="restore" data-user="${esc(u)}">↩️ ${isAuto ? 'Mover a No me siguen (descartar)' : 'Mover a No me siguen'}</button>
-      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">👁️ Ignorar cuenta</button>
-      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">🗑️ Marcar como eliminada</button>
+      ${isAuto ? `<div class="popover-reason">${esc(reasonText)}</div>` : ''}
+      ${isAuto ? `<button class="popover-item" data-action="famous-manual" data-user="${esc(u)}">Confirmar como relevante manual</button>` : ''}
+      <button class="popover-item" data-action="restore" data-user="${esc(u)}">${isAuto ? 'Mover a No me siguen (descartar)' : 'Mover a No me siguen'}</button>
+      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">Ignorar cuenta</button>
+      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">Marcar como eliminada</button>
     `;
   } else if (category === 'ignored') {
     actionsHtml = `
-      <button class="popover-item" data-action="restore" data-user="${esc(u)}">↩️ Volver a incluir (No me siguen)</button>
-      <button class="popover-item" data-action="famous" data-user="${esc(u)}">⭐ Marcar como famosa</button>
-      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">🗑️ Marcar como eliminada</button>
+      <button class="popover-item" data-action="restore" data-user="${esc(u)}">Volver a incluir (No me siguen)</button>
+      <button class="popover-item" data-action="famous" data-user="${esc(u)}">Marcar como relevante</button>
+      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">Marcar como eliminada</button>
     `;
   } else if (category === 'deleted') {
     actionsHtml = `
-      <button class="popover-item" data-action="restore" data-user="${esc(u)}">↩️ Restaurar como activa</button>
-      <button class="popover-item" data-action="famous" data-user="${esc(u)}">⭐ Marcar como famosa</button>
-      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">👁️ Ignorar cuenta</button>
+      <button class="popover-item" data-action="restore" data-user="${esc(u)}">Restaurar como activa</button>
+      <button class="popover-item" data-action="famous" data-user="${esc(u)}">Marcar como relevante</button>
+      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">Ignorar cuenta</button>
     `;
   }
   return `
@@ -191,13 +213,13 @@ function renderAccountRow(u, category, acc) {
   let pillHtml = '<div class="pill bad">no te sigue</div>';
   if (category === 'famous') {
     if (acc?.famousSource === 'auto') {
-      pillHtml = '<div class="pill auto-pill" title="Detectada automáticamente">✨ Automática</div>';
+      pillHtml = '<div class="pill auto">Detectada automáticamente</div>';
     } else {
-      pillHtml = '<div class="pill info" title="Marcada por ti">⭐ Famosa</div>';
+      pillHtml = '<div class="pill info">Manual</div>';
     }
   }
-  if (category === 'ignored') pillHtml = '<div class="pill muted-pill">👁️ Ignorada</div>';
-  if (category === 'deleted') pillHtml = '<div class="pill bad-soft-pill">🗑️ Eliminada</div>';
+  if (category === 'ignored') pillHtml = '<div class="pill muted-pill">Ignorada</div>';
+  if (category === 'deleted') pillHtml = '<div class="pill bad-soft-pill">Eliminada</div>';
 
   return `
     <div class="account-row">
@@ -205,7 +227,7 @@ function renderAccountRow(u, category, acc) {
         <div class="avatar">${esc(initials(u))}</div>
         <div class="grow">
           <div class="name">@${esc(u)}</div>
-          <div class="sub">${category === 'famous' && acc?.famousSource === 'auto' ? esc(acc?.autoFamousReason || 'Detectada automáticamente') : 'Tocar para abrir en Instagram'}</div>
+          <div class="sub">${category === 'famous' && acc?.famousSource === 'auto' ? esc(acc?.autoFamousReason || 'Cuenta relevante') : 'Tocar para abrir en Instagram'}</div>
         </div>
       </a>
       <div class="account-actions">
@@ -213,6 +235,131 @@ function renderAccountRow(u, category, acc) {
         <button class="menu-btn ${isMenuOpen ? 'active' : ''}" data-menu-user="${esc(u)}" title="Opciones" aria-label="Opciones de cuenta">⋯</button>
       </div>
       ${isMenuOpen ? renderAccountPopover(u, category, acc) : ''}
+    </div>
+  `;
+}
+
+function renderUpdateModal() {
+  if (!state.isUpdateModalOpen) return '';
+
+  const step = state.updateModalStep;
+
+  let contentHtml = '';
+  if (step === 1) {
+    contentHtml = `
+      <div class="modal-header">
+        <h3 class="modal-title">Paso 1: Solicitar exportación</h3>
+        <button class="modal-close" id="btnCloseModalHeader" title="Cerrar">${icons.close}</button>
+      </div>
+      <p class="sub" style="margin-top: 0; line-height: 1.5;">
+        Instagram permite descargar oficialmente tu lista de seguidores y seguidos desde el Centro de cuentas.
+      </p>
+      
+      <a href="${META_ACCOUNTS_CENTER_URL}" target="_blank" rel="noopener noreferrer" class="primary" style="display:block;text-align:center;text-decoration:none;margin: 14px 0 16px;">
+        Abrir Centro de cuentas
+      </a>
+
+      <div class="card" style="padding: 12px 14px; background: var(--panel2); margin-bottom: 16px;">
+        <div class="name" style="font-size: 12px; text-transform: uppercase; color: var(--text-muted); letter-spacing: 0.5px; margin-bottom: 8px;">Guía rápida</div>
+        <ol class="guide-steps" style="margin: 0; padding-left: 18px;">
+          <li>Selecciona tu cuenta de Instagram.</li>
+          <li>Elige <strong>Descargar o transferir información</strong>.</li>
+          <li>Selecciona <strong>Seguidores y seguidos</strong>.</li>
+          <li>Formato: <strong>JSON</strong>.</li>
+          <li>Periodo: <strong>Cualquier fecha</strong>.</li>
+          <li>Solicita la descarga.</li>
+        </ol>
+      </div>
+
+      <button id="btnStep1Done" class="secondary" style="width: 100%; margin-bottom: 8px;">
+        He solicitado la exportación
+      </button>
+      <button id="btnStep1Skip" class="ghost" style="width: 100%;">
+        Ya tengo el archivo ZIP descargado
+      </button>
+
+      <div class="privacy-note">El archivo se procesa únicamente en este dispositivo.</div>
+    `;
+  } else if (step === 2) {
+    contentHtml = `
+      <div class="modal-header">
+        <h3 class="modal-title">Paso 2: Importar archivo ZIP</h3>
+        <button class="modal-close" id="btnCloseModalHeader" title="Cerrar">${icons.close}</button>
+      </div>
+      <p class="sub" style="margin-top: 0; line-height: 1.5;">
+        Cuando Instagram te avise de que el archivo está listo, descárgalo y selecciónalo a continuación.
+      </p>
+
+      <input type="file" id="modalZipInput" accept=".zip,application/zip" class="hidden" />
+
+      <div style="margin: 20px 0 14px;">
+        <button id="btnSelectZip" class="primary" ${state.isAnalyzingZip ? 'disabled' : ''}>
+          ${state.isAnalyzingZip ? 'Analizando archivo…' : 'Seleccionar archivo ZIP'}
+        </button>
+      </div>
+
+      ${state.updateModalError ? `
+        <div class="status error" style="margin-bottom: 12px;">${esc(state.updateModalError)}</div>
+      ` : ''}
+
+      <button id="btnBackToStep1" class="ghost" style="width: 100%;">
+        Volver al paso anterior
+      </button>
+
+      <div class="privacy-note">Tus datos nunca salen de este navegador.</div>
+    `;
+  } else if (step === 3) {
+    const res = state.lastImportResult || {};
+    contentHtml = `
+      <div class="modal-header">
+        <h3 class="modal-title">Datos actualizados</h3>
+        <button class="modal-close" id="btnCloseModalHeader" title="Cerrar">${icons.close}</button>
+      </div>
+      <p class="sub" style="margin-top: 0;">
+        Tu listado de seguidores y seguidos ha sido sincronizado correctamente.
+      </p>
+
+      <div class="result-metric-grid">
+        <div class="result-metric-box">
+          <strong>${res.followersCount ?? '—'}</strong>
+          <span>Seguidores</span>
+        </div>
+        <div class="result-metric-box">
+          <strong>${res.followingCount ?? '—'}</strong>
+          <span>Seguidos</span>
+        </div>
+        <div class="result-metric-box">
+          <strong style="color: var(--bad);">${res.notBackCount ?? '—'}</strong>
+          <span>No te siguen</span>
+        </div>
+        <div class="result-metric-box">
+          <strong style="color: var(--good);">${res.newFollowersCount > 0 ? '+' + res.newFollowersCount : '0'}</strong>
+          <span>Nuevos seguidores</span>
+        </div>
+      </div>
+
+      <div class="card" style="padding: 12px 14px; background: var(--panel2); margin-bottom: 16px; font-size: 13px;">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 6px;">
+          <span style="color: var(--text-muted);">Bajas detectadas</span>
+          <span style="font-weight: 600; color: var(--bad);">${res.unfollowedCount ?? 0}</span>
+        </div>
+        <div style="display: flex; justify-content: space-between;">
+          <span style="color: var(--text-muted);">Altas registradas</span>
+          <span style="font-weight: 600; color: var(--good);">${res.newFollowersCount ?? 0}</span>
+        </div>
+      </div>
+
+      <button id="btnCloseModalResults" class="primary">
+        Ver resultados
+      </button>
+    `;
+  }
+
+  return `
+    <div class="modal-backdrop" id="updateModalBackdrop">
+      <div class="modal-sheet">
+        ${contentHtml}
+      </div>
     </div>
   `;
 }
@@ -231,6 +378,8 @@ function renderApp() {
 
   const unfollowedCount = state.activity.filter(e => e.type === 'unfollowed').length;
   const followedCount = state.activity.filter(e => e.type === 'followed').length;
+
+  const isPending = isExportPending(state.exportState.exportRequestedAt, state.exportState.lastSuccessfulImportAt);
 
   const filteredActivity = state.activity.filter(e => {
     if (state.activityFilter === 'unfollowed') return e.type === 'unfollowed';
@@ -274,18 +423,19 @@ function renderApp() {
           </div>
         </div>
 
-        <div class="section">
-          <div class="section-title">
-            <h2>Actualizar Instagram</h2>
-            <small>${AUTH_ENABLED ? (supabaseReady() ? (state.user ? 'Supabase conectado' : 'Sin sesión') : 'Modo local') : 'Almacenamiento local'}</small>
+        ${isPending ? `
+          <div class="pending-banner">
+            <div class="pending-banner-icon">${icons.clock}</div>
+            <div class="grow">
+              <div class="title">Tienes una exportación pendiente</div>
+              <div class="sub">Solicitada el ${formatDate(state.exportState.exportRequestedAt)}</div>
+            </div>
+            <button id="btnQuickImportZip" class="secondary btn-sm">Importar ZIP</button>
           </div>
-          <div class="card import-box">
-            <div class="name">Importa tu ZIP oficial</div>
-            <div class="sub">Exportación JSON de Instagram (Seguidores y seguidos).</div>
-            <input id="zipInput" type="file" accept=".zip,application/zip">
-            <button id="importBtn" class="primary">Analizar y guardar</button>
-            <div class="status" id="importStatus"></div>
-          </div>
+        ` : ''}
+
+        <div style="margin: 16px 0 20px;">
+          <button id="openUpdateModalBtn" class="primary">Actualizar datos</button>
         </div>
 
         <div class="section">
@@ -297,7 +447,7 @@ function renderApp() {
             ${state.activity.length ? state.activity.slice(0, 3).map(e => `
               <div class="row">
                 <div class="avatar ${e.type === 'unfollowed' ? 'down' : 'up'}">
-                  ${e.type === 'unfollowed' ? '↓' : '↑'}
+                  ${e.type === 'unfollowed' ? icons.down : icons.up}
                 </div>
                 <div class="grow">
                   <div class="name">@${esc(e.username)}</div>
@@ -322,13 +472,11 @@ function renderApp() {
           </div>
 
           ${snapshot && suggestionsFiltered.length ? `
-            <!-- Sugerencias de cuentas relevantes -->
             <div class="suggestions-box card">
               <div class="suggestions-header">
-                <span class="icon">💡</span>
                 <div class="grow">
                   <strong>Sugerencias de cuentas relevantes</strong>
-                  <div class="sub">¿Deseas separar estas cuentas del listado principal?</div>
+                  <div class="sub">Posibles cuentas públicas detectadas en el listado</div>
                 </div>
               </div>
               <div class="suggestions-list">
@@ -338,7 +486,7 @@ function renderApp() {
                     <div class="suggestion-row">
                       <div class="grow">
                         <div class="name">@${esc(sugUser)}</div>
-                        <div class="sub">${esc(sugAcc?.autoFamousReason || 'Posible cuenta pública relevante')}</div>
+                        <div class="sub">${esc(sugAcc?.autoFamousReason || 'Cuenta pública')}</div>
                       </div>
                       <div class="suggestion-actions">
                         <button class="btn-sug accept" data-sug-action="famous" data-user="${esc(sugUser)}">Mover</button>
@@ -355,7 +503,7 @@ function renderApp() {
           <div class="card" id="notBackList">
             ${snapshot ? (
               normalFiltered.length ? normalFiltered.map(u => renderAccountRow(u, 'normal', state.knownAccounts[u])).join('') : '<div class="empty">No se encontraron cuentas en esta sección.</div>'
-            ) : '<div class="empty">Importa un ZIP para empezar.</div>'}
+            ) : '<div class="empty">Actualiza tus datos para empezar.</div>'}
           </div>
 
           ${snapshot ? `
@@ -363,12 +511,11 @@ function renderApp() {
             <div class="category-group">
               <div class="category-header ${!state.collapsedCategories.famous ? 'open' : ''}" data-toggle-cat="famous">
                 <div class="category-title">
-                  <span class="icon">⭐</span>
                   <span>Famosas / relevantes</span>
                 </div>
                 <div class="category-meta">
                   <span class="category-count">${famousFiltered.length}</span>
-                  <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  ${icons.chevron}
                 </div>
               </div>
               <div class="card category-card ${state.collapsedCategories.famous ? 'hidden' : ''}">
@@ -380,12 +527,11 @@ function renderApp() {
             <div class="category-group">
               <div class="category-header ${!state.collapsedCategories.ignored ? 'open' : ''}" data-toggle-cat="ignored">
                 <div class="category-title">
-                  <span class="icon">👁️</span>
                   <span>Ignoradas</span>
                 </div>
                 <div class="category-meta">
                   <span class="category-count">${ignoredFiltered.length}</span>
-                  <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  ${icons.chevron}
                 </div>
               </div>
               <div class="card category-card ${state.collapsedCategories.ignored ? 'hidden' : ''}">
@@ -397,12 +543,11 @@ function renderApp() {
             <div class="category-group">
               <div class="category-header ${!state.collapsedCategories.deleted ? 'open' : ''}" data-toggle-cat="deleted">
                 <div class="category-title">
-                  <span class="icon">🗑️</span>
                   <span>Cuentas eliminadas</span>
                 </div>
                 <div class="category-meta">
                   <span class="category-count">${deletedFiltered.length}</span>
-                  <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  ${icons.chevron}
                 </div>
               </div>
               <div class="card category-card ${state.collapsedCategories.deleted ? 'hidden' : ''}">
@@ -437,7 +582,7 @@ function renderApp() {
             ${filteredActivity.length ? filteredActivity.map(e => `
               <div class="row">
                 <div class="avatar ${e.type === 'unfollowed' ? 'down' : 'up'}">
-                  ${e.type === 'unfollowed' ? '↓' : '↑'}
+                  ${e.type === 'unfollowed' ? icons.down : icons.up}
                 </div>
                 <div class="grow">
                   <div class="name">@${esc(e.username)}</div>
@@ -460,10 +605,7 @@ function renderApp() {
 
           <!-- Diagnóstico del sistema -->
           <div class="card settings-card">
-            <div class="settings-title">
-              <span>ℹ️</span>
-              <span>Información de la App</span>
-            </div>
+            <div class="settings-title">Información de la App</div>
             <div class="settings-list">
               <div class="settings-item">
                 <span class="settings-label">Versión</span>
@@ -494,56 +636,51 @@ function renderApp() {
 
           <!-- Control de Actualización PWA -->
           <div class="card settings-card">
-            <div class="settings-title">
-              <span>🚀</span>
-              <span>Control de Actualización PWA</span>
-            </div>
+            <div class="settings-title">Control de Actualización PWA</div>
 
             <div class="update-status-box ${state.pwaUpdateAvailable ? 'has-update' : ''}">
-              <span>${state.pwaUpdateAvailable ? '✨' : (state.isCheckingUpdate ? '⏳' : '✅')}</span>
               <div class="grow">${esc(state.pwaStatusText)}</div>
             </div>
 
             <div class="settings-btn-grid">
               ${state.pwaUpdateAvailable ? `
-                <button class="primary" id="applyUpdateBtn">🚀 Actualizar ahora</button>
+                <button class="primary" id="applyUpdateBtn">Actualizar ahora</button>
               ` : ''}
               <button class="secondary" id="checkUpdateBtn" ${state.isCheckingUpdate ? 'disabled' : ''}>
-                ${state.isCheckingUpdate ? 'Comprobando actualización…' : '🔍 Comprobar actualización'}
+                ${state.isCheckingUpdate ? 'Comprobando actualización…' : 'Comprobar actualización'}
               </button>
               <button class="secondary" id="reloadAppBtn">
-                🔄 Recargar FollowCheck
+                Recargar FollowCheck
               </button>
             </div>
           </div>
 
           <!-- Zonas futuras preparadas -->
           <div class="card settings-card future-box">
-            <div class="settings-title">
-              <span>☁️</span>
-              <span>Sincronización y Privacidad</span>
-            </div>
-            <div class="sub" style="margin-bottom: 8px;">Próximamente: exportar datos, respaldos y sincronización multi-dispositivo.</div>
+            <div class="settings-title">Sincronización y Privacidad</div>
+            <div class="sub">Próximamente: exportar datos, respaldos y sincronización multi-dispositivo.</div>
           </div>
         </div>
       </section>
+
+      ${renderUpdateModal()}
     </main>
 
     <nav>
       <button class="${state.currentView === 'homeView' ? 'active' : ''}" data-view="homeView">
-        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+        ${icons.home}
         Inicio
       </button>
       <button class="${state.currentView === 'notBackView' ? 'active' : ''}" data-view="notBackView">
-        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+        ${icons.users}
         No me siguen
       </button>
       <button class="${state.currentView === 'activityView' ? 'active' : ''}" data-view="activityView">
-        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+        ${icons.activity}
         Actividad
       </button>
       <button class="${state.currentView === 'settingsView' ? 'active' : ''}" data-view="settingsView">
-        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        ${icons.settings}
         Ajustes
       </button>
     </nav>
@@ -588,7 +725,6 @@ function attachAppListeners() {
       state.notBackSearch = e.target.value;
       state.activeMenuUser = null;
       render();
-      // Restore focus to search input
       const newSearchInput = document.querySelector('#searchNotBack');
       if (newSearchInput) {
         newSearchInput.focus();
@@ -668,59 +804,102 @@ function attachAppListeners() {
     });
   });
 
-  // Botón Comprobar Actualización PWA
-  const checkUpdateBtn = document.querySelector('#checkUpdateBtn');
-  if (checkUpdateBtn) {
-    checkUpdateBtn.addEventListener('click', async () => {
-      state.isCheckingUpdate = true;
-      state.pwaStatusText = 'Comprobando si hay actualizaciones…';
-      render();
-
-      const result = await checkPwaUpdate();
-      state.isCheckingUpdate = false;
-      state.pwaStatusText = result.message;
-      state.pwaUpdateAvailable = result.status === 'update-available';
+  // Botones para abrir Modal de Actualización
+  const openUpdateModalBtn = document.querySelector('#openUpdateModalBtn');
+  if (openUpdateModalBtn) {
+    openUpdateModalBtn.addEventListener('click', () => {
+      state.isUpdateModalOpen = true;
+      state.updateModalStep = 1;
+      state.updateModalError = '';
       render();
     });
   }
 
-  // Botón Aplicar Actualización PWA
-  const applyUpdateBtn = document.querySelector('#applyUpdateBtn');
-  if (applyUpdateBtn) {
-    applyUpdateBtn.addEventListener('click', () => {
-      state.pwaStatusText = 'Aplicando actualización y recargando…';
+  const btnQuickImportZip = document.querySelector('#btnQuickImportZip');
+  if (btnQuickImportZip) {
+    btnQuickImportZip.addEventListener('click', () => {
+      state.isUpdateModalOpen = true;
+      state.updateModalStep = 2;
+      state.updateModalError = '';
       render();
-      applyPwaUpdate();
     });
   }
 
-  // Botón Recargar App
-  const reloadAppBtn = document.querySelector('#reloadAppBtn');
-  if (reloadAppBtn) {
-    reloadAppBtn.addEventListener('click', () => {
-      reloadApp();
+  // Controles del Modal de Actualización
+  const btnCloseModalHeader = document.querySelector('#btnCloseModalHeader');
+  if (btnCloseModalHeader) {
+    btnCloseModalHeader.addEventListener('click', () => {
+      state.isUpdateModalOpen = false;
+      render();
     });
   }
 
-  // Importar ZIP
-  const importBtn = document.querySelector('#importBtn');
-  if (importBtn) {
-    importBtn.addEventListener('click', async () => {
-      const input = document.querySelector('#zipInput');
-      const status = document.querySelector('#importStatus');
+  const btnCloseModalResults = document.querySelector('#btnCloseModalResults');
+  if (btnCloseModalResults) {
+    btnCloseModalResults.addEventListener('click', () => {
+      state.isUpdateModalOpen = false;
+      state.currentView = 'notBackView';
+      render();
+    });
+  }
 
-      if (!input.files?.[0]) {
-        status.className = 'status error';
-        status.textContent = 'Selecciona primero el archivo ZIP de Instagram.';
-        return;
+  const updateModalBackdrop = document.querySelector('#updateModalBackdrop');
+  if (updateModalBackdrop) {
+    updateModalBackdrop.addEventListener('click', (e) => {
+      if (e.target === updateModalBackdrop) {
+        state.isUpdateModalOpen = false;
+        render();
       }
+    });
+  }
+
+  const btnStep1Done = document.querySelector('#btnStep1Done');
+  if (btnStep1Done) {
+    btnStep1Done.addEventListener('click', () => {
+      const now = new Date().toISOString();
+      recordExportRequested(now);
+      state.exportState = loadExportState();
+      state.updateModalStep = 2;
+      state.updateModalError = '';
+      render();
+    });
+  }
+
+  const btnStep1Skip = document.querySelector('#btnStep1Skip');
+  if (btnStep1Skip) {
+    btnStep1Skip.addEventListener('click', () => {
+      state.updateModalStep = 2;
+      state.updateModalError = '';
+      render();
+    });
+  }
+
+  const btnBackToStep1 = document.querySelector('#btnBackToStep1');
+  if (btnBackToStep1) {
+    btnBackToStep1.addEventListener('click', () => {
+      state.updateModalStep = 1;
+      state.updateModalError = '';
+      render();
+    });
+  }
+
+  const btnSelectZip = document.querySelector('#btnSelectZip');
+  const modalZipInput = document.querySelector('#modalZipInput');
+  if (btnSelectZip && modalZipInput) {
+    btnSelectZip.addEventListener('click', () => {
+      modalZipInput.click();
+    });
+
+    modalZipInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
 
       try {
-        importBtn.disabled = true;
-        status.className = 'status';
-        status.textContent = 'Analizando archivo ZIP…';
+        state.isAnalyzingZip = true;
+        state.updateModalError = '';
+        render();
 
-        const current = await parseInstagramZip(input.files[0]);
+        const current = await parseInstagramZip(file);
         const previous = state.snapshot;
         const comparison = compareSnapshots(previous, current);
 
@@ -728,7 +907,6 @@ function attachAppListeners() {
         let events = [];
 
         if (comparison.isInitial) {
-          // Primera importación: No generar falsos eventos
           outcomeText = `Estado inicial guardado: ${current.followers.length} seguidores · ${current.following.length} seguidos`;
         } else {
           const now = new Date().toISOString();
@@ -749,9 +927,13 @@ function attachAppListeners() {
           await appendActivity(events);
         }
 
-        // Sincronizar known accounts conservando clasificaciones previas
+        // Sincronizar known accounts
         state.knownAccounts = syncKnownAccounts(state.knownAccounts, current);
         saveLocalKnownAccounts(state.knownAccounts);
+
+        // Registrar fecha de importación exitosa
+        recordSuccessfulImport();
+        state.exportState = loadExportState();
 
         state.snapshot = savedSnapshot;
         if (events.length > 0) {
@@ -760,17 +942,58 @@ function attachAppListeners() {
         state.lastImportOutcome = outcomeText;
         localStorage.setItem('fc_last_outcome', outcomeText);
 
-        status.className = 'status success';
-        status.textContent = `${outcomeText}. Guardado correctamente.`;
+        const notBackAll = calculateNotFollowingBack(savedSnapshot);
+        const categorized = categorizeNotFollowingBack(notBackAll, state.knownAccounts);
 
+        state.lastImportResult = {
+          followersCount: savedSnapshot.followers.length,
+          followingCount: savedSnapshot.following.length,
+          notBackCount: categorized.notFollowingBack.length,
+          newFollowersCount: comparison.newFollowers.length,
+          unfollowedCount: comparison.unfollowed.length
+        };
+
+        state.isAnalyzingZip = false;
+        state.updateModalStep = 3;
         render();
       } catch (err) {
         console.error(err);
-        status.className = 'status error';
-        status.textContent = `Error: ${err.message}`;
-      } finally {
-        importBtn.disabled = false;
+        state.isAnalyzingZip = false;
+        state.updateModalError = `Error al procesar el archivo: ${err.message}`;
+        render();
       }
+    });
+  }
+
+  // Botones de Ajustes
+  const checkUpdateBtn = document.querySelector('#checkUpdateBtn');
+  if (checkUpdateBtn) {
+    checkUpdateBtn.addEventListener('click', async () => {
+      state.isCheckingUpdate = true;
+      state.pwaStatusText = 'Comprobando si hay actualizaciones…';
+      render();
+
+      const result = await checkPwaUpdate();
+      state.isCheckingUpdate = false;
+      state.pwaStatusText = result.message;
+      state.pwaUpdateAvailable = result.status === 'update-available';
+      render();
+    });
+  }
+
+  const applyUpdateBtn = document.querySelector('#applyUpdateBtn');
+  if (applyUpdateBtn) {
+    applyUpdateBtn.addEventListener('click', () => {
+      state.pwaStatusText = 'Aplicando actualización y recargando…';
+      render();
+      applyPwaUpdate();
+    });
+  }
+
+  const reloadAppBtn = document.querySelector('#reloadAppBtn');
+  if (reloadAppBtn) {
+    reloadAppBtn.addEventListener('click', () => {
+      reloadApp();
     });
   }
 }
@@ -794,12 +1017,13 @@ function render() {
 async function boot() {
   try {
     state.knownAccounts = loadLocalKnownAccounts();
+    state.exportState = loadExportState();
 
     // Inicializar ciclo de vida de PWA
     initPwa(({ status, updateAvailable }) => {
       if (updateAvailable) {
         state.pwaUpdateAvailable = true;
-        state.pwaStatusText = '¡Nueva versión disponible para instalar!';
+        state.pwaStatusText = 'Nueva versión disponible para instalar.';
         render();
       }
     });

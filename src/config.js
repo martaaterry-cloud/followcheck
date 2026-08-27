@@ -5,3 +5,7 @@ export { APP_VERSION, BUILD_ID } from './version.js';
 // true  = Autenticación privada con Supabase (Magic Link / RLS).
 export const AUTH_ENABLED = false;
 
+// URL oficial del Centro de Cuentas de Meta para descarga de información
+export const META_ACCOUNTS_CENTER_URL = 'https://accountscenter.instagram.com/info_and_permissions/dyi/';
+
+
