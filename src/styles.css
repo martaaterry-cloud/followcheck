@@ -286,8 +286,8 @@ nav {
   transform: translateX(-50%);
   width: min(560px, 100%);
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  padding: 8px 12px calc(8px + env(safe-area-inset-bottom, 8px));
+  grid-template-columns: repeat(4, 1fr);
+  padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 6px));
   background: rgba(12, 13, 15, 0.95);
   backdrop-filter: blur(16px);
   border-top: 1px solid var(--border);
@@ -296,17 +296,22 @@ nav {
 nav button {
   background: transparent;
   color: var(--muted);
-  padding: 8px 4px;
-  font-size: 12px;
+  padding: 6px 2px;
+  font-size: 11px;
   font-weight: 600;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 3px;
 }
+nav button svg {
+  width: 18px;
+  height: 18px;
+}
 nav button.active {
   color: var(--accent);
 }
+
 
 /* Categorías y Acordeones */
 .category-group {
@@ -560,6 +565,81 @@ nav button.active {
   border-color: var(--border-focus);
 }
 
+/* Pantalla de Ajustes */
+.settings-card {
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+.settings-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.settings-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.settings-item:first-child {
+  padding-top: 0;
+}
+.settings-label {
+  color: var(--muted);
+}
+.settings-value {
+  font-weight: 600;
+  color: var(--text);
+  text-align: right;
+  word-break: break-all;
+}
+
+.update-status-box {
+  background: var(--panel2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.update-status-box.has-update {
+  background: var(--good-soft);
+  border-color: var(--good);
+  color: var(--text);
+}
+
+.settings-btn-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.settings-btn-grid button {
+  width: 100%;
+}
+
+.future-box {
+  opacity: 0.65;
+  border-style: dashed;
+}
+
 .hidden { display: none !important; }
+
 
 

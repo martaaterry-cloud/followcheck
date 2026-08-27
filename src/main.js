@@ -1,5 +1,5 @@
 import './styles.css';
-import { APP_VERSION, AUTH_ENABLED } from './config.js';
+import { APP_VERSION, BUILD_ID, AUTH_ENABLED } from './config.js';
 import { parseInstagramZip } from './instagramImport.js';
 import { compareSnapshots, calculateNotFollowingBack } from './compare.js';
 import { getLatestSnapshot, saveSnapshot, getActivity, appendActivity } from './repository.js';
@@ -7,6 +7,7 @@ import { getAuthUser, sendOtpEmail, logoutUser, subscribeToAuth } from './auth.j
 import { supabaseReady } from './supabase.js';
 import { loadLocalKnownAccounts, saveLocalKnownAccounts } from './storage.js';
 import { syncKnownAccounts, classifyAccount, categorizeNotFollowingBack } from './accounts.js';
+import { initPwa, checkPwaUpdate, applyPwaUpdate, reloadApp } from './pwa.js';
 
 const state = {
   user: null,
@@ -14,7 +15,7 @@ const state = {
   activity: [],
   knownAccounts: loadLocalKnownAccounts(),
   lastImportOutcome: localStorage.getItem('fc_last_outcome') || null,
-  currentView: 'homeView',
+  currentView: 'homeView', // 'homeView' | 'notBackView' | 'activityView' | 'settingsView'
   notBackSearch: '',
   activityFilter: 'all', // 'all' | 'unfollowed' | 'followed'
   pendingEmail: '',
@@ -23,7 +24,10 @@ const state = {
     famous: true,
     ignored: true,
     deleted: true
-  }
+  },
+  pwaStatusText: 'Estás usando la última versión.',
+  pwaUpdateAvailable: false,
+  isCheckingUpdate: false
 };
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({
@@ -445,20 +449,102 @@ function renderApp() {
           </div>
         </div>
       </section>
+
+      <!-- VISTA 4: AJUSTES -->
+      <section id="settingsView" class="${state.currentView === 'settingsView' ? '' : 'hidden'}">
+        <div class="section">
+          <div class="section-title">
+            <h2>Ajustes</h2>
+            <small>Diagnóstico y control de versión</small>
+          </div>
+
+          <!-- Diagnóstico del sistema -->
+          <div class="card settings-card">
+            <div class="settings-title">
+              <span>ℹ️</span>
+              <span>Información de la App</span>
+            </div>
+            <div class="settings-list">
+              <div class="settings-item">
+                <span class="settings-label">Versión</span>
+                <span class="settings-value">v${APP_VERSION}</span>
+              </div>
+              <div class="settings-item">
+                <span class="settings-label">Build / Commit</span>
+                <span class="settings-value">${BUILD_ID}</span>
+              </div>
+              <div class="settings-item">
+                <span class="settings-label">Almacenamiento</span>
+                <span class="settings-value">${AUTH_ENABLED ? (supabaseReady() ? 'Nube Supabase' : 'Modo local') : 'Almacenamiento local'}</span>
+              </div>
+              <div class="settings-item">
+                <span class="settings-label">Autenticación</span>
+                <span class="settings-value">${AUTH_ENABLED ? (state.user ? esc(state.user.email) : 'Sin sesión activa') : 'Desactivada (Modo local)'}</span>
+              </div>
+              <div class="settings-item">
+                <span class="settings-label">Última importación</span>
+                <span class="settings-value">${formatDate(snapshot?.importedAt)}</span>
+              </div>
+              <div class="settings-item">
+                <span class="settings-label">Cuentas registradas</span>
+                <span class="settings-value">${Object.keys(state.knownAccounts).length} cuentas</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Control de Actualización PWA -->
+          <div class="card settings-card">
+            <div class="settings-title">
+              <span>🚀</span>
+              <span>Control de Actualización PWA</span>
+            </div>
+
+            <div class="update-status-box ${state.pwaUpdateAvailable ? 'has-update' : ''}">
+              <span>${state.pwaUpdateAvailable ? '✨' : (state.isCheckingUpdate ? '⏳' : '✅')}</span>
+              <div class="grow">${esc(state.pwaStatusText)}</div>
+            </div>
+
+            <div class="settings-btn-grid">
+              ${state.pwaUpdateAvailable ? `
+                <button class="primary" id="applyUpdateBtn">🚀 Actualizar ahora</button>
+              ` : ''}
+              <button class="secondary" id="checkUpdateBtn" ${state.isCheckingUpdate ? 'disabled' : ''}>
+                ${state.isCheckingUpdate ? 'Comprobando actualización…' : '🔍 Comprobar actualización'}
+              </button>
+              <button class="secondary" id="reloadAppBtn">
+                🔄 Recargar FollowCheck
+              </button>
+            </div>
+          </div>
+
+          <!-- Zonas futuras preparadas -->
+          <div class="card settings-card future-box">
+            <div class="settings-title">
+              <span>☁️</span>
+              <span>Sincronización y Privacidad</span>
+            </div>
+            <div class="sub" style="margin-bottom: 8px;">Próximamente: exportar datos, respaldos y sincronización multi-dispositivo.</div>
+          </div>
+        </div>
+      </section>
     </main>
 
     <nav>
       <button class="${state.currentView === 'homeView' ? 'active' : ''}" data-view="homeView">
-        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>
         Inicio
       </button>
       <button class="${state.currentView === 'notBackView' ? 'active' : ''}" data-view="notBackView">
-        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
         No me siguen
       </button>
       <button class="${state.currentView === 'activityView' ? 'active' : ''}" data-view="activityView">
-        <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
         Actividad
+      </button>
+      <button class="${state.currentView === 'settingsView' ? 'active' : ''}" data-view="settingsView">
+        <svg fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        Ajustes
       </button>
     </nav>
   `;
@@ -582,6 +668,40 @@ function attachAppListeners() {
     });
   });
 
+  // Botón Comprobar Actualización PWA
+  const checkUpdateBtn = document.querySelector('#checkUpdateBtn');
+  if (checkUpdateBtn) {
+    checkUpdateBtn.addEventListener('click', async () => {
+      state.isCheckingUpdate = true;
+      state.pwaStatusText = 'Comprobando si hay actualizaciones…';
+      render();
+
+      const result = await checkPwaUpdate();
+      state.isCheckingUpdate = false;
+      state.pwaStatusText = result.message;
+      state.pwaUpdateAvailable = result.status === 'update-available';
+      render();
+    });
+  }
+
+  // Botón Aplicar Actualización PWA
+  const applyUpdateBtn = document.querySelector('#applyUpdateBtn');
+  if (applyUpdateBtn) {
+    applyUpdateBtn.addEventListener('click', () => {
+      state.pwaStatusText = 'Aplicando actualización y recargando…';
+      render();
+      applyPwaUpdate();
+    });
+  }
+
+  // Botón Recargar App
+  const reloadAppBtn = document.querySelector('#reloadAppBtn');
+  if (reloadAppBtn) {
+    reloadAppBtn.addEventListener('click', () => {
+      reloadApp();
+    });
+  }
+
   // Importar ZIP
   const importBtn = document.querySelector('#importBtn');
   if (importBtn) {
@@ -675,6 +795,15 @@ async function boot() {
   try {
     state.knownAccounts = loadLocalKnownAccounts();
 
+    // Inicializar ciclo de vida de PWA
+    initPwa(({ status, updateAvailable }) => {
+      if (updateAvailable) {
+        state.pwaUpdateAvailable = true;
+        state.pwaStatusText = '¡Nueva versión disponible para instalar!';
+        render();
+      }
+    });
+
     if (AUTH_ENABLED && supabaseReady()) {
       state.user = await getAuthUser();
       subscribeToAuth(async (event, session) => {
@@ -709,4 +838,3 @@ async function boot() {
 }
 
 boot();
-
