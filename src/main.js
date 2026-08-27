@@ -5,16 +5,25 @@ import { compareSnapshots, calculateNotFollowingBack } from './compare.js';
 import { getLatestSnapshot, saveSnapshot, getActivity, appendActivity } from './repository.js';
 import { getAuthUser, sendOtpEmail, logoutUser, subscribeToAuth } from './auth.js';
 import { supabaseReady } from './supabase.js';
+import { loadLocalKnownAccounts, saveLocalKnownAccounts } from './storage.js';
+import { syncKnownAccounts, classifyAccount, categorizeNotFollowingBack } from './accounts.js';
 
 const state = {
   user: null,
   snapshot: null,
   activity: [],
+  knownAccounts: loadLocalKnownAccounts(),
   lastImportOutcome: localStorage.getItem('fc_last_outcome') || null,
   currentView: 'homeView',
   notBackSearch: '',
   activityFilter: 'all', // 'all' | 'unfollowed' | 'followed'
-  pendingEmail: ''
+  pendingEmail: '',
+  activeMenuUser: null,
+  collapsedCategories: {
+    famous: true,
+    ignored: true,
+    deleted: true
+  }
 };
 
 const esc = s => String(s).replace(/[&<>"']/g, c => ({
@@ -135,12 +144,75 @@ function renderAuth() {
   });
 }
 
+function renderAccountPopover(u, category) {
+  let actionsHtml = '';
+  if (category === 'normal') {
+    actionsHtml = `
+      <button class="popover-item" data-action="famous" data-user="${esc(u)}">⭐ Marcar como famosa</button>
+      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">👁️ Ignorar cuenta</button>
+      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">🗑️ Marcar como eliminada</button>
+    `;
+  } else if (category === 'famous') {
+    actionsHtml = `
+      <button class="popover-item" data-action="restore" data-user="${esc(u)}">↩️ Mover a No me siguen</button>
+      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">👁️ Ignorar cuenta</button>
+      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">🗑️ Marcar como eliminada</button>
+    `;
+  } else if (category === 'ignored') {
+    actionsHtml = `
+      <button class="popover-item" data-action="restore" data-user="${esc(u)}">↩️ Volver a incluir (No me siguen)</button>
+      <button class="popover-item" data-action="famous" data-user="${esc(u)}">⭐ Marcar como famosa</button>
+      <button class="popover-item danger" data-action="delete" data-user="${esc(u)}">🗑️ Marcar como eliminada</button>
+    `;
+  } else if (category === 'deleted') {
+    actionsHtml = `
+      <button class="popover-item" data-action="restore" data-user="${esc(u)}">↩️ Restaurar como activa</button>
+      <button class="popover-item" data-action="famous" data-user="${esc(u)}">⭐ Marcar como famosa</button>
+      <button class="popover-item" data-action="ignore" data-user="${esc(u)}">👁️ Ignorar cuenta</button>
+    `;
+  }
+  return `
+    <div class="account-popover" data-popover-for="${esc(u)}">
+      ${actionsHtml}
+    </div>
+  `;
+}
+
+function renderAccountRow(u, category) {
+  const isMenuOpen = state.activeMenuUser === u;
+  let pillHtml = '<div class="pill bad">no te sigue</div>';
+  if (category === 'famous') pillHtml = '<div class="pill info">⭐ Famosa</div>';
+  if (category === 'ignored') pillHtml = '<div class="pill muted-pill">👁️ Ignorada</div>';
+  if (category === 'deleted') pillHtml = '<div class="pill bad-soft-pill">🗑️ Eliminada</div>';
+
+  return `
+    <div class="account-row">
+      <a class="account-link" href="https://www.instagram.com/${encodeURIComponent(u)}/" target="_blank" rel="noopener noreferrer">
+        <div class="avatar">${esc(initials(u))}</div>
+        <div class="grow">
+          <div class="name">@${esc(u)}</div>
+          <div class="sub">Tocar para abrir en Instagram</div>
+        </div>
+      </a>
+      <div class="account-actions">
+        ${pillHtml}
+        <button class="menu-btn ${isMenuOpen ? 'active' : ''}" data-menu-user="${esc(u)}" title="Opciones" aria-label="Opciones de cuenta">⋯</button>
+      </div>
+      ${isMenuOpen ? renderAccountPopover(u, category) : ''}
+    </div>
+  `;
+}
+
 function renderApp() {
   const snapshot = state.snapshot;
   const notBackAll = calculateNotFollowingBack(snapshot);
-  const notBackFiltered = notBackAll.filter(u =>
-    u.toLowerCase().includes(state.notBackSearch.toLowerCase().trim())
-  );
+  const categorized = categorizeNotFollowingBack(notBackAll, state.knownAccounts);
+  
+  const query = state.notBackSearch.toLowerCase().trim();
+  const normalFiltered = categorized.notFollowingBack.filter(u => u.toLowerCase().includes(query));
+  const famousFiltered = categorized.famous.filter(u => u.toLowerCase().includes(query));
+  const ignoredFiltered = categorized.ignored.filter(u => u.toLowerCase().includes(query));
+  const deletedFiltered = categorized.deleted.filter(u => u.toLowerCase().includes(query));
 
   const unfollowedCount = state.activity.filter(e => e.type === 'unfollowed').length;
   const followedCount = state.activity.filter(e => e.type === 'followed').length;
@@ -174,7 +246,7 @@ function renderApp() {
         <div class="grid">
           <div class="stat"><strong id="followersCount">${snapshot?.followers?.length ?? '—'}</strong><span>Seguidores</span></div>
           <div class="stat"><strong id="followingCount">${snapshot?.following?.length ?? '—'}</strong><span>Seguidos</span></div>
-          <div class="stat"><strong id="notBackCount">${snapshot ? notBackAll.length : '—'}</strong><span>No te siguen</span></div>
+          <div class="stat"><strong id="notBackCount">${snapshot ? categorized.notFollowingBack.length : '—'}</strong><span>No te siguen</span></div>
         </div>
 
         <div class="info-banner">
@@ -228,25 +300,71 @@ function renderApp() {
         <div class="section">
           <div class="section-title">
             <h2>No me siguen</h2>
-            <small id="notBackLabel">${snapshot ? notBackFiltered.length + ' de ' + notBackAll.length + ' cuentas' : '0 cuentas'}</small>
+            <small id="notBackLabel">${snapshot ? normalFiltered.length + ' de ' + categorized.notFollowingBack.length + ' cuentas' : '0 cuentas'}</small>
           </div>
           <div class="search-bar">
             <input id="searchNotBack" type="text" placeholder="Buscar por usuario…" value="${esc(state.notBackSearch)}" />
           </div>
+
+          <!-- 1. Lista principal: No me siguen -->
           <div class="card" id="notBackList">
             ${snapshot ? (
-              notBackFiltered.length ? notBackFiltered.map(u => `
-                <a class="row" href="https://www.instagram.com/${encodeURIComponent(u)}/" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">
-                  <div class="avatar">${esc(initials(u))}</div>
-                  <div class="grow">
-                    <div class="name">@${esc(u)}</div>
-                    <div class="sub">Tocar para abrir en Instagram</div>
-                  </div>
-                  <div class="pill bad">no te sigue</div>
-                </a>
-              `).join('') : '<div class="empty">No se encontraron coincidencias.</div>'
+              normalFiltered.length ? normalFiltered.map(u => renderAccountRow(u, 'normal')).join('') : '<div class="empty">No se encontraron cuentas en esta sección.</div>'
             ) : '<div class="empty">Importa un ZIP para empezar.</div>'}
           </div>
+
+          ${snapshot ? `
+            <!-- 2. Categoría: Famosas / Relevantes -->
+            <div class="category-group">
+              <div class="category-header ${!state.collapsedCategories.famous ? 'open' : ''}" data-toggle-cat="famous">
+                <div class="category-title">
+                  <span class="icon">⭐</span>
+                  <span>Famosas / relevantes</span>
+                </div>
+                <div class="category-meta">
+                  <span class="category-count">${famousFiltered.length}</span>
+                  <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </div>
+              </div>
+              <div class="card category-card ${state.collapsedCategories.famous ? 'hidden' : ''}">
+                ${famousFiltered.length ? famousFiltered.map(u => renderAccountRow(u, 'famous')).join('') : '<div class="empty">No hay cuentas marcadas como famosas.</div>'}
+              </div>
+            </div>
+
+            <!-- 3. Categoría: Ignoradas -->
+            <div class="category-group">
+              <div class="category-header ${!state.collapsedCategories.ignored ? 'open' : ''}" data-toggle-cat="ignored">
+                <div class="category-title">
+                  <span class="icon">👁️</span>
+                  <span>Ignoradas</span>
+                </div>
+                <div class="category-meta">
+                  <span class="category-count">${ignoredFiltered.length}</span>
+                  <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </div>
+              </div>
+              <div class="card category-card ${state.collapsedCategories.ignored ? 'hidden' : ''}">
+                ${ignoredFiltered.length ? ignoredFiltered.map(u => renderAccountRow(u, 'ignored')).join('') : '<div class="empty">No hay cuentas ignoradas.</div>'}
+              </div>
+            </div>
+
+            <!-- 4. Categoría: Cuentas eliminadas -->
+            <div class="category-group">
+              <div class="category-header ${!state.collapsedCategories.deleted ? 'open' : ''}" data-toggle-cat="deleted">
+                <div class="category-title">
+                  <span class="icon">🗑️</span>
+                  <span>Cuentas eliminadas</span>
+                </div>
+                <div class="category-meta">
+                  <span class="category-count">${deletedFiltered.length}</span>
+                  <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </div>
+              </div>
+              <div class="card category-card ${state.collapsedCategories.deleted ? 'hidden' : ''}">
+                ${deletedFiltered.length ? deletedFiltered.map(u => renderAccountRow(u, 'deleted')).join('') : '<div class="empty">No hay cuentas eliminadas.</div>'}
+              </div>
+            </div>
+          ` : ''}
         </div>
       </section>
 
@@ -323,6 +441,7 @@ function attachAppListeners() {
   document.querySelectorAll('nav button').forEach(btn => {
     btn.addEventListener('click', () => {
       state.currentView = btn.dataset.view;
+      state.activeMenuUser = null;
       render();
     });
   });
@@ -340,33 +459,64 @@ function attachAppListeners() {
   if (searchInput) {
     searchInput.addEventListener('input', (e) => {
       state.notBackSearch = e.target.value;
-      const snapshot = state.snapshot;
-      const notBackAll = calculateNotFollowingBack(snapshot);
-      const filtered = notBackAll.filter(u =>
-        u.toLowerCase().includes(state.notBackSearch.toLowerCase().trim())
-      );
-      const listEl = document.querySelector('#notBackList');
-      const labelEl = document.querySelector('#notBackLabel');
-
-      if (labelEl) {
-        labelEl.textContent = `${filtered.length} de ${notBackAll.length} cuentas`;
-      }
-      if (listEl) {
-        listEl.innerHTML = snapshot ? (
-          filtered.length ? filtered.map(u => `
-            <a class="row" href="https://www.instagram.com/${encodeURIComponent(u)}/" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none">
-              <div class="avatar">${esc(initials(u))}</div>
-              <div class="grow">
-                <div class="name">@${esc(u)}</div>
-                <div class="sub">Tocar para abrir en Instagram</div>
-              </div>
-              <div class="pill bad">no te sigue</div>
-            </a>
-          `).join('') : '<div class="empty">No se encontraron coincidencias.</div>'
-        ) : '<div class="empty">Importa un ZIP para empezar.</div>';
+      state.activeMenuUser = null;
+      render();
+      // Restore focus to search input
+      const newSearchInput = document.querySelector('#searchNotBack');
+      if (newSearchInput) {
+        newSearchInput.focus();
+        newSearchInput.setSelectionRange(newSearchInput.value.length, newSearchInput.value.length);
       }
     });
   }
+
+  // Toggles de Acordeones
+  document.querySelectorAll('[data-toggle-cat]').forEach(header => {
+    header.addEventListener('click', () => {
+      const cat = header.dataset.toggleCat;
+      if (cat && state.collapsedCategories[cat] !== undefined) {
+        state.collapsedCategories[cat] = !state.collapsedCategories[cat];
+        render();
+      }
+    });
+  });
+
+  // Botón de menú en cada fila de cuenta
+  document.querySelectorAll('[data-menu-user]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const user = btn.dataset.menuUser;
+      state.activeMenuUser = state.activeMenuUser === user ? null : user;
+      render();
+    });
+  });
+
+  // Acciones dentro del menú contextual
+  document.querySelectorAll('.popover-item').forEach(actionBtn => {
+    actionBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const action = actionBtn.dataset.action;
+      const user = actionBtn.dataset.user;
+
+      if (!user) return;
+
+      if (action === 'famous') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { famous: true });
+      } else if (action === 'ignore') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { ignored: true });
+      } else if (action === 'delete') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { deleted: true });
+      } else if (action === 'restore') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { restore: true });
+      }
+
+      saveLocalKnownAccounts(state.knownAccounts);
+      state.activeMenuUser = null;
+      render();
+    });
+  });
 
   // Importar ZIP
   const importBtn = document.querySelector('#importBtn');
@@ -415,6 +565,10 @@ function attachAppListeners() {
           await appendActivity(events);
         }
 
+        // Sincronizar known accounts conservando clasificaciones previas
+        state.knownAccounts = syncKnownAccounts(state.knownAccounts, current);
+        saveLocalKnownAccounts(state.knownAccounts);
+
         state.snapshot = savedSnapshot;
         if (events.length > 0) {
           state.activity = [...events, ...state.activity].slice(0, 500);
@@ -437,6 +591,14 @@ function attachAppListeners() {
   }
 }
 
+// Cerrar menú emergente si se hace click fuera
+document.addEventListener('click', (e) => {
+  if (state.activeMenuUser && !e.target.closest('.account-popover') && !e.target.closest('[data-menu-user]')) {
+    state.activeMenuUser = null;
+    render();
+  }
+});
+
 function render() {
   if (AUTH_ENABLED && supabaseReady() && !state.user) {
     renderAuth();
@@ -447,6 +609,8 @@ function render() {
 
 async function boot() {
   try {
+    state.knownAccounts = loadLocalKnownAccounts();
+
     if (AUTH_ENABLED && supabaseReady()) {
       state.user = await getAuthUser();
       subscribeToAuth(async (event, session) => {
@@ -454,6 +618,10 @@ async function boot() {
         if (state.user) {
           state.snapshot = await getLatestSnapshot();
           state.activity = await getActivity();
+          if (state.snapshot) {
+            state.knownAccounts = syncKnownAccounts(state.knownAccounts, state.snapshot);
+            saveLocalKnownAccounts(state.knownAccounts);
+          }
         } else {
           state.snapshot = null;
           state.activity = [];
@@ -465,6 +633,10 @@ async function boot() {
     if (!AUTH_ENABLED || state.user || !supabaseReady()) {
       state.snapshot = await getLatestSnapshot();
       state.activity = await getActivity();
+      if (state.snapshot) {
+        state.knownAccounts = syncKnownAccounts(state.knownAccounts, state.snapshot);
+        saveLocalKnownAccounts(state.knownAccounts);
+      }
     }
   } catch (err) {
     console.error('Boot error:', err);
@@ -473,3 +645,4 @@ async function boot() {
 }
 
 boot();
+

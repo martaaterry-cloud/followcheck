@@ -308,4 +308,176 @@ nav button.active {
   color: var(--accent);
 }
 
+/* Categorías y Acordeones */
+.category-group {
+  margin-top: 14px;
+}
+.category-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+.category-header:hover {
+  background: var(--panel2);
+  border-color: var(--border-focus);
+}
+.category-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.category-title .icon {
+  font-size: 14px;
+}
+.category-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.category-count {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--panel2);
+  color: var(--muted);
+  font-weight: 600;
+}
+.chevron {
+  width: 16px;
+  height: 16px;
+  stroke: var(--muted);
+  transition: transform 0.2s ease;
+}
+.category-header.open .chevron {
+  transform: rotate(180deg);
+}
+
+.category-card {
+  margin-top: 6px;
+}
+
+/* Fila de Cuenta con Acción Discreta */
+.account-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.15s;
+}
+.account-row:last-child {
+  border-bottom: none;
+}
+.account-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.account-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+}
+
+.account-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.menu-btn {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.menu-btn:hover, .menu-btn.active {
+  background: var(--panel2);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+/* Popover Flotante de Opciones */
+.account-popover {
+  position: absolute;
+  top: calc(100% - 4px);
+  right: 14px;
+  background: var(--panel2);
+  border: 1px solid var(--border-focus);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.65);
+  z-index: 90;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 210px;
+  animation: popoverFadeIn 0.15s ease-out;
+}
+
+@keyframes popoverFadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.popover-item {
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.popover-item:hover {
+  background: var(--panel3);
+  color: #fff;
+}
+.popover-item.danger:hover {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
+.pill.muted-pill {
+  background: var(--panel2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.pill.bad-soft-pill {
+  background: var(--bad-soft);
+  color: var(--bad);
+}
+
 .hidden { display: none !important; }
+
