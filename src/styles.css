@@ -31,18 +31,105 @@ body {
 }
 
 .app {
-  max-width: 540px;
+  max-width: 500px;
   margin: 0 auto;
   min-height: 100vh;
-  padding: 16px 16px calc(84px + env(safe-area-inset-bottom, 16px));
+  padding: calc(env(safe-area-inset-top, 24px) + 8px) 16px calc(84px + env(safe-area-inset-bottom, 16px));
 }
 
-/* Header */
+/* Auth View: Centrada y equilibrada en móvil */
+.auth-view {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  padding: calc(env(safe-area-inset-top, 24px) + 16px) 16px calc(env(safe-area-inset-bottom, 16px) + 16px);
+}
+.auth-container {
+  width: 100%;
+  max-width: 380px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.auth-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+.auth-brand h1 {
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  margin: 0;
+}
+.auth-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 22px 20px;
+}
+.auth-title {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 4px;
+  letter-spacing: -0.3px;
+}
+.auth-sub {
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 0 0 16px;
+  line-height: 1.4;
+}
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.auth-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.auth-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.auth-links {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+.auth-link-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px;
+  transition: color 0.15s;
+  font-family: inherit;
+}
+.auth-link-btn:hover {
+  color: var(--text);
+}
+.auth-link-btn.subtle {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+/* Header compacto */
 header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 6px 2px 16px;
+  padding: 4px 2px 14px;
 }
 .header-brand {
   display: flex;
@@ -50,15 +137,15 @@ header {
   gap: 8px;
 }
 h1 {
-  font-size: 20px;
+  font-size: 18px;
   margin: 0;
   font-weight: 700;
-  letter-spacing: -0.4px;
+  letter-spacing: -0.3px;
 }
 
 .badge {
   font-size: 11px;
-  padding: 4px 8px;
+  padding: 3px 8px;
   border-radius: 999px;
   background: var(--panel2);
   color: var(--text-muted);
@@ -75,7 +162,7 @@ h1 {
   font-size: 11px;
   color: var(--text-muted);
   background: var(--panel2);
-  padding: 4px 10px;
+  padding: 3px 9px;
   border-radius: 999px;
   border: 1px solid var(--border);
   max-width: 160px;
@@ -83,27 +170,13 @@ h1 {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.btn-logout {
-  background: transparent;
-  color: var(--text-muted);
-  border: 1px solid var(--border);
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.btn-logout:hover {
-  color: var(--bad);
-  border-color: var(--bad);
-}
 
 /* Grid de Métricas */
 .grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
-  margin: 10px 0 14px;
+  margin: 8px 0 12px;
 }
 .stat, .card {
   background: var(--panel);
@@ -111,15 +184,15 @@ h1 {
   border-radius: var(--radius-md);
 }
 .stat {
-  padding: 14px 8px;
+  padding: 13px 8px;
   text-align: center;
 }
 .stat strong {
   display: block;
-  font-size: 20px;
+  font-size: 19px;
   margin-bottom: 2px;
   font-weight: 700;
-  letter-spacing: -0.5px;
+  letter-spacing: -0.4px;
 }
 .stat span, .sub, .muted {
   font-size: 12px;
@@ -134,8 +207,8 @@ h1 {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: 11px 14px;
-  margin-bottom: 14px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
   font-size: 12px;
 }
 .info-banner .label { color: var(--text-muted); }
@@ -151,7 +224,7 @@ h1 {
   border: 1px solid var(--border-focus);
   border-radius: var(--radius-md);
   padding: 12px 14px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 .pending-banner-icon {
   width: 32px;
@@ -170,7 +243,7 @@ h1 {
 }
 
 /* Secciones */
-.section { margin-top: 18px; }
+.section { margin-top: 16px; }
 .section-title {
   display: flex;
   justify-content: space-between;
@@ -235,7 +308,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   display: flex;
   gap: 12px;
   align-items: center;
-  padding: 12px 14px;
+  padding: 11px 14px;
   border-bottom: 1px solid var(--border);
   transition: background 0.15s;
 }
@@ -272,7 +345,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .pill {
   font-size: 11px;
-  padding: 4px 8px;
+  padding: 3px 8px;
   border-radius: 999px;
   font-weight: 600;
   white-space: nowrap;
@@ -284,21 +357,35 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .pill.muted-pill { background: var(--panel2); color: var(--text-muted); border: 1px solid var(--border); }
 .pill.bad-soft-pill { background: var(--bad-soft); color: var(--bad); }
 
-/* Inputs */
-input[type=text], input[type=email] {
+/* Inputs y Corrección Autofill Safari iOS */
+input[type=text], input[type=email], input[type=password] {
   width: 100%;
-  background: var(--panel);
+  background: var(--panel2);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 11px 14px;
+  border-radius: var(--radius-sm);
+  padding: 11px 13px;
   color: var(--text);
   font-size: 13px;
   outline: none;
   font-family: inherit;
   transition: border-color 0.15s;
+  -webkit-appearance: none;
+  appearance: none;
 }
-input[type=text]:focus, input[type=email]:focus {
+input[type=text]:focus, input[type=email]:focus, input[type=password]:focus {
   border-color: var(--border-focus);
+}
+
+/* Solución definitiva para fondo blanco en Safari iOS Autofill */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-box-shadow: 0 0 0 1000px #191c22 inset !important;
+  -webkit-text-fill-color: #f4f5f7 !important;
+  caret-color: #f4f5f7 !important;
+  border-color: rgba(255, 255, 255, 0.18) !important;
+  transition: background-color 5000s ease-in-out 0s;
 }
 
 .search-bar { margin-bottom: 12px; }
@@ -335,14 +422,14 @@ input[type=text]:focus, input[type=email]:focus {
 .status.error { color: var(--bad); }
 
 .empty {
-  padding: 28px 16px;
+  padding: 26px 16px;
   text-align: center;
   color: var(--text-muted);
   font-size: 13px;
 }
 
 /* Categorías y Acordeones */
-.category-group { margin-top: 12px; }
+.category-group { margin-top: 10px; }
 .category-header {
   display: flex;
   justify-content: space-between;
@@ -568,7 +655,7 @@ input[type=text]:focus, input[type=email]:focus {
   margin-bottom: 12px;
 }
 .settings-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   margin-bottom: 10px;
   color: var(--text-muted);
@@ -623,11 +710,6 @@ input[type=text]:focus, input[type=email]:focus {
 }
 .settings-btn-grid button { width: 100%; }
 
-.future-box {
-  opacity: 0.65;
-  border-style: dashed;
-}
-
 /* Modal / Flujo de Actualización */
 .modal-backdrop {
   position: fixed;
@@ -639,7 +721,7 @@ input[type=text]:focus, input[type=email]:focus {
   place-items: end center;
   animation: fadeIn 0.15s ease-out;
 }
-@media (min-width: 560px) {
+@media (min-width: 540px) {
   .modal-backdrop {
     place-items: center;
     padding: 20px;
@@ -653,7 +735,7 @@ input[type=text]:focus, input[type=email]:focus {
 
 .modal-sheet {
   width: 100%;
-  max-width: 520px;
+  max-width: 500px;
   background: var(--panel);
   border: 1px solid var(--border-focus);
   border-radius: 20px 20px 0 0;
@@ -662,7 +744,7 @@ input[type=text]:focus, input[type=email]:focus {
   overflow-y: auto;
   animation: slideUp 0.2s ease-out;
 }
-@media (min-width: 560px) {
+@media (min-width: 540px) {
   .modal-sheet {
     border-radius: 20px;
     padding: 24px;
@@ -678,10 +760,10 @@ input[type=text]:focus, input[type=email]:focus {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: 14px;
 }
 .modal-title {
-  font-size: 17px;
+  font-size: 16px;
   font-weight: 700;
   margin: 0;
 }
@@ -703,7 +785,7 @@ input[type=text]:focus, input[type=email]:focus {
 }
 
 .guide-steps {
-  margin: 14px 0;
+  margin: 12px 0;
   padding-left: 20px;
   font-size: 13px;
   color: var(--text-muted);
@@ -727,7 +809,7 @@ input[type=text]:focus, input[type=email]:focus {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 10px;
-  margin: 16px 0;
+  margin: 14px 0;
 }
 .result-metric-box {
   background: var(--panel2);
@@ -752,7 +834,7 @@ nav {
   left: 50%;
   bottom: 0;
   transform: translateX(-50%);
-  width: min(540px, 100%);
+  width: min(500px, 100%);
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   padding: 6px 6px calc(6px + env(safe-area-inset-bottom, 6px));

@@ -2,10 +2,14 @@ import { defineConfig } from 'vite';
 import { execSync } from 'child_process';
 
 let commitHash = 'dev';
-try {
-  commitHash = execSync('git rev-parse --short HEAD').toString().trim();
-} catch {
-  commitHash = process.env.GITHUB_SHA ? process.env.GITHUB_SHA.slice(0, 7) : 'local';
+if (process.env.GITHUB_SHA) {
+  commitHash = process.env.GITHUB_SHA.slice(0, 7);
+} else {
+  try {
+    commitHash = execSync('git rev-parse --short HEAD').toString().trim();
+  } catch {
+    commitHash = 'local';
+  }
 }
 
 export default defineConfig({

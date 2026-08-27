@@ -108,120 +108,154 @@ function renderAuth() {
   let formHtml = '';
   if (state.authView === 'login') {
     formHtml = `
-      <h2>Iniciar sesión</h2>
-      <p class="sub">Accede a tu cuenta privada para sincronizar tus datos.</p>
+      <h2 class="auth-title">Iniciar sesión</h2>
+      <p class="auth-sub">Accede a tu cuenta privada para sincronizar tus datos.</p>
 
       <form class="auth-form" id="loginForm">
-        <input
-          id="authEmailInput"
-          type="email"
-          placeholder="tu@email.com"
-          value="${esc(state.authEmail)}"
-          required
-          autocomplete="email"
-        />
-        <input
-          id="authPasswordInput"
-          type="password"
-          placeholder="Contraseña"
-          value="${esc(state.authPassword)}"
-          required
-          autocomplete="current-password"
-        />
+        <div class="auth-field">
+          <label class="auth-label" for="authEmailInput">Correo electrónico</label>
+          <input
+            id="authEmailInput"
+            type="email"
+            placeholder="tu@email.com"
+            value="${esc(state.authEmail)}"
+            required
+            autocomplete="email"
+          />
+        </div>
+        <div class="auth-field">
+          <label class="auth-label" for="authPasswordInput">Contraseña</label>
+          <input
+            id="authPasswordInput"
+            type="password"
+            placeholder="••••••••"
+            value="${esc(state.authPassword)}"
+            required
+            autocomplete="current-password"
+          />
+        </div>
         <button type="submit" class="primary" id="submitAuthBtn" ${state.isAuthLoading ? 'disabled' : ''}>
           ${state.isAuthLoading ? 'Iniciando sesión…' : 'Iniciar sesión'}
         </button>
       </form>
 
-      <div style="margin-top: 14px; display: flex; flex-direction: column; gap: 8px;">
-        <button type="button" class="ghost" id="toRegisterBtn">¿No tienes cuenta? Crear cuenta</button>
-        <button type="button" class="ghost" id="toForgotBtn" style="border: none; font-size: 12px;">¿Has olvidado tu contraseña?</button>
+      ${state.authError ? `
+        <div class="status error" style="margin-top: 12px;">${esc(state.authError)}</div>
+      ` : ''}
+
+      ${state.authSuccess ? `
+        <div class="status success" style="margin-top: 12px;">${esc(state.authSuccess)}</div>
+      ` : ''}
+
+      <div class="auth-links">
+        <button type="button" class="auth-link-btn" id="toRegisterBtn">¿No tienes cuenta? Crear cuenta</button>
+        <button type="button" class="auth-link-btn subtle" id="toForgotBtn">¿Has olvidado tu contraseña?</button>
       </div>
     `;
   } else if (state.authView === 'register') {
     formHtml = `
-      <h2>Crear cuenta</h2>
-      <p class="sub">Registra tu usuario privado para almacenar tus datos de forma segura.</p>
+      <h2 class="auth-title">Crear cuenta</h2>
+      <p class="auth-sub">Registra tu usuario privado para almacenar tus datos en la nube.</p>
 
       <form class="auth-form" id="registerForm">
-        <input
-          id="authEmailInput"
-          type="email"
-          placeholder="tu@email.com"
-          value="${esc(state.authEmail)}"
-          required
-          autocomplete="email"
-        />
-        <input
-          id="authPasswordInput"
-          type="password"
-          placeholder="Contraseña (mínimo 6 caracteres)"
-          value="${esc(state.authPassword)}"
-          required
-          autocomplete="new-password"
-        />
-        <input
-          id="authConfirmPasswordInput"
-          type="password"
-          placeholder="Confirmar contraseña"
-          value="${esc(state.authConfirmPassword)}"
-          required
-          autocomplete="new-password"
-        />
+        <div class="auth-field">
+          <label class="auth-label" for="authEmailInput">Correo electrónico</label>
+          <input
+            id="authEmailInput"
+            type="email"
+            placeholder="tu@email.com"
+            value="${esc(state.authEmail)}"
+            required
+            autocomplete="email"
+          />
+        </div>
+        <div class="auth-field">
+          <label class="auth-label" for="authPasswordInput">Contraseña</label>
+          <input
+            id="authPasswordInput"
+            type="password"
+            placeholder="Mínimo 6 caracteres"
+            value="${esc(state.authPassword)}"
+            required
+            autocomplete="new-password"
+          />
+        </div>
+        <div class="auth-field">
+          <label class="auth-label" for="authConfirmPasswordInput">Confirmar contraseña</label>
+          <input
+            id="authConfirmPasswordInput"
+            type="password"
+            placeholder="Repite la contraseña"
+            value="${esc(state.authConfirmPassword)}"
+            required
+            autocomplete="new-password"
+          />
+        </div>
         <button type="submit" class="primary" id="submitAuthBtn" ${state.isAuthLoading ? 'disabled' : ''}>
           ${state.isAuthLoading ? 'Creando cuenta…' : 'Crear cuenta'}
         </button>
       </form>
 
-      <div style="margin-top: 14px;">
-        <button type="button" class="ghost" id="toLoginBtn" style="width: 100%;">¿Ya tienes cuenta? Iniciar sesión</button>
+      ${state.authError ? `
+        <div class="status error" style="margin-top: 12px;">${esc(state.authError)}</div>
+      ` : ''}
+
+      ${state.authSuccess ? `
+        <div class="status success" style="margin-top: 12px;">${esc(state.authSuccess)}</div>
+      ` : ''}
+
+      <div class="auth-links">
+        <button type="button" class="auth-link-btn" id="toLoginBtn">¿Ya tienes cuenta? Iniciar sesión</button>
       </div>
     `;
   } else if (state.authView === 'forgot') {
     formHtml = `
-      <h2>Recuperar contraseña</h2>
-      <p class="sub">Introduce tu correo para recibir un enlace oficial de recuperación.</p>
+      <h2 class="auth-title">Recuperar contraseña</h2>
+      <p class="auth-sub">Introduce tu correo para recibir un enlace oficial de recuperación.</p>
 
       <form class="auth-form" id="forgotForm">
-        <input
-          id="authEmailInput"
-          type="email"
-          placeholder="tu@email.com"
-          value="${esc(state.authEmail)}"
-          required
-          autocomplete="email"
-        />
+        <div class="auth-field">
+          <label class="auth-label" for="authEmailInput">Correo electrónico</label>
+          <input
+            id="authEmailInput"
+            type="email"
+            placeholder="tu@email.com"
+            value="${esc(state.authEmail)}"
+            required
+            autocomplete="email"
+          />
+        </div>
         <button type="submit" class="primary" id="submitAuthBtn" ${state.isAuthLoading ? 'disabled' : ''}>
           ${state.isAuthLoading ? 'Enviando…' : 'Enviar enlace de recuperación'}
         </button>
       </form>
 
-      <div style="margin-top: 14px;">
-        <button type="button" class="ghost" id="toLoginBtn" style="width: 100%;">Volver a Iniciar sesión</button>
+      ${state.authError ? `
+        <div class="status error" style="margin-top: 12px;">${esc(state.authError)}</div>
+      ` : ''}
+
+      ${state.authSuccess ? `
+        <div class="status success" style="margin-top: 12px;">${esc(state.authSuccess)}</div>
+      ` : ''}
+
+      <div class="auth-links">
+        <button type="button" class="auth-link-btn" id="toLoginBtn">Volver a Iniciar sesión</button>
       </div>
     `;
   }
 
   app.innerHTML = `
     <main class="app auth-view">
-      <header>
-        <div class="header-brand">
+      <div class="auth-container">
+        <div class="auth-brand">
           <h1>FollowCheck</h1>
           <div class="badge">v${APP_VERSION}</div>
         </div>
-      </header>
 
-      <section class="card auth-card" style="padding: 20px;">
-        ${formHtml}
-
-        ${state.authError ? `
-          <div class="status error" style="margin-top: 14px;">${esc(state.authError)}</div>
-        ` : ''}
-
-        ${state.authSuccess ? `
-          <div class="status success" style="margin-top: 14px;">${esc(state.authSuccess)}</div>
-        ` : ''}
-      </section>
+        <section class="auth-card">
+          ${formHtml}
+        </section>
+      </div>
     </main>
   `;
 
@@ -307,11 +341,11 @@ function attachAuthListeners() {
       try {
         const data = await registerWithPassword(state.authEmail, state.authPassword, state.authConfirmPassword);
         state.isAuthLoading = false;
-        if (data.session) {
+        if (data.user) {
           state.user = data.user;
           await onUserAuthenticated(data.user);
         } else {
-          state.authSuccess = 'Cuenta creada. Por favor, comprueba tu correo si se requiere confirmación e inicia sesión.';
+          state.authSuccess = 'Cuenta creada correctamente.';
           state.authView = 'login';
           render();
         }
@@ -322,6 +356,7 @@ function attachAuthListeners() {
       }
     });
   }
+
 
   const forgotForm = document.querySelector('#forgotForm');
   if (forgotForm) {

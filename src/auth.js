@@ -13,6 +13,33 @@ export function validatePassword(password, confirmPassword = null) {
   return { valid: true, message: '' };
 }
 
+function mapAuthError(err) {
+  if (!err) return 'Ha ocurrido un error inesperado.';
+  const msg = String(err.message || '').toLowerCase();
+  const status = err.status;
+
+  if (msg.includes('failed to fetch') || msg.includes('networkerror') || msg.includes('fetch')) {
+    return 'Error de conexión. Comprueba tu acceso a internet.';
+  }
+  if (status === 429 || msg.includes('rate limit') || msg.includes('too many requests')) {
+    return 'Has realizado demasiados intentos. Por favor, espera unos minutos.';
+  }
+  if (msg.includes('invalid login credentials') || msg.includes('invalid_grant') || msg.includes('invalid credentials')) {
+    return 'Correo o contraseña incorrectos.';
+  }
+  if (msg.includes('email not confirmed')) {
+    return 'Debes confirmar tu correo electrónico antes de iniciar sesión.';
+  }
+  if (msg.includes('user already registered') || msg.includes('already exists') || msg.includes('already registered')) {
+    return 'Ya existe una cuenta registrada con este correo.';
+  }
+  if (msg.includes('password should be at least')) {
+    return 'La contraseña debe tener al menos 6 caracteres.';
+  }
+
+  return err.message || 'Error en la autenticación.';
+}
+
 export async function getAuthUser() {
   if (!supabaseReady()) return null;
   try {
@@ -56,14 +83,7 @@ export async function loginWithPassword(email, password) {
   });
 
   if (error) {
-    const msg = error.message.toLowerCase();
-    if (msg.includes('invalid login credentials') || msg.includes('invalid_grant')) {
-      throw new Error('Correo o contraseña incorrectos.');
-    }
-    if (msg.includes('email not confirmed')) {
-      throw new Error('Debes confirmar tu correo electrónico antes de iniciar sesión.');
-    }
-    throw new Error(error.message);
+    throw new Error(mapAuthError(error));
   }
 
   return data;
@@ -93,11 +113,23 @@ export async function registerWithPassword(email, password, confirmPassword) {
   });
 
   if (error) {
-    const msg = error.message.toLowerCase();
-    if (msg.includes('user already registered') || msg.includes('already exists')) {
-      throw new Error('Ya existe una cuenta registrada con este correo.');
+    throw new Error(mapAuthError(error));
+  }
+
+  // Si signUp no devolvió sesión directa pero el usuario ya fue auto-confirmado por trigger,
+  // iniciar sesión automáticamente para entrar directo
+  if (data.user && !data.session) {
+    try {
+      const loginRes = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password: cleanPassword
+      });
+      if (loginRes.data?.session) {
+        return loginRes.data;
+      }
+    } catch {
+      // ignore
     }
-    throw new Error(error.message);
   }
 
   return data;
@@ -119,7 +151,7 @@ export async function resetPassword(email) {
   });
 
   if (error) {
-    throw new Error(error.message);
+    throw new Error(mapAuthError(error));
   }
 
   return data;

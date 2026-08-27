@@ -41,11 +41,23 @@ export function initPwa(onStateChange) {
           }
         });
       });
+      // Comprobar actualización al volver a primer plano en iPhone/PWA
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible' && swRegistration) {
+          swRegistration.update().catch(() => {});
+        }
+      });
+      window.addEventListener('focus', () => {
+        if (swRegistration) {
+          swRegistration.update().catch(() => {});
+        }
+      });
     } catch (err) {
       console.warn('No se pudo registrar el Service Worker:', err);
     }
   });
 }
+
 
 function notifyStateChange(status, extra = {}) {
   if (typeof stateChangeCallback === 'function') {
