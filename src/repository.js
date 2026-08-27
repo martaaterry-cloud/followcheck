@@ -5,9 +5,10 @@ import {
   loadLocalSnapshot, saveLocalSnapshot,
   loadLocalActivity, saveLocalActivity
 } from './storage.js';
+import { knownAccountToPreferenceRow } from './sync.js';
 
 export async function getLatestSnapshot() {
-  if (!AUTH_ENABLED) {
+  if (!AUTH_ENABLED || !supabaseReady()) {
     return loadLocalSnapshot();
   }
 
@@ -59,7 +60,7 @@ export async function pruneOldSnapshots(userId, maxKeep = 10) {
 }
 
 export async function saveSnapshot(snapshot) {
-  if (!AUTH_ENABLED) {
+  if (!AUTH_ENABLED || !supabaseReady()) {
     const local = {
       id: Date.now(),
       importedAt: snapshot.importedAt || new Date().toISOString(),
@@ -93,16 +94,20 @@ export async function saveSnapshot(snapshot) {
   // Política de retención: mantener un máximo de 10 snapshots completos por usuario
   await pruneOldSnapshots(user.id, 10);
 
-  return {
+  const result = {
     id: data.id,
     importedAt: data.created_at,
     followers: data.followers || [],
     following: data.following || []
   };
+
+  // Guardar también en local como caché inmediata
+  saveLocalSnapshot(result);
+  return result;
 }
 
 export async function getActivity() {
-  if (!AUTH_ENABLED) {
+  if (!AUTH_ENABLED || !supabaseReady()) {
     return loadLocalActivity();
   }
 
@@ -127,18 +132,15 @@ export async function getActivity() {
 export async function appendActivity(events) {
   if (!events || !events.length) return;
 
-  if (!AUTH_ENABLED) {
-    const local = [...events, ...loadLocalActivity()].slice(0, 500);
-    saveLocalActivity(local);
+  const local = [...events, ...loadLocalActivity()].slice(0, 500);
+  saveLocalActivity(local);
+
+  if (!AUTH_ENABLED || !supabaseReady()) {
     return;
   }
 
   const user = await getAuthUser();
-  if (!user) {
-    const local = [...events, ...loadLocalActivity()].slice(0, 500);
-    saveLocalActivity(local);
-    return;
-  }
+  if (!user) return;
 
   const rows = events.map(e => ({
     user_id: user.id,
@@ -149,4 +151,38 @@ export async function appendActivity(events) {
 
   const { error } = await supabase.from('activity').insert(rows);
   if (error) throw error;
+}
+
+export async function getRemotePreferences(userId) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId) return [];
+
+  const { data, error } = await supabase
+    .from('account_preferences')
+    .select('*')
+    .eq('user_id', userId);
+
+  if (error) {
+    console.warn('Error al obtener account_preferences:', error);
+    return [];
+  }
+
+  return data || [];
+}
+
+export async function upsertRemotePreferences(userId, prefsList) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId || !prefsList || !prefsList.length) return;
+
+  const { error } = await supabase
+    .from('account_preferences')
+    .upsert(prefsList, { onConflict: 'user_id,username' });
+
+  if (error) {
+    console.warn('Error al guardar account_preferences en Supabase:', error);
+  }
+}
+
+export async function upsertSingleRemotePreference(userId, username, acc) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId || !username || !acc) return;
+  const row = knownAccountToPreferenceRow(userId, username, acc);
+  await upsertRemotePreferences(userId, [row]);
 }

@@ -11,5 +11,5 @@ test('version.js exporta APP_VERSION y BUILD_ID válidos', () => {
 test('config.js re-exporta la misma APP_VERSION y BUILD_ID', () => {
   assert.equal(CONFIG_APP_VERSION, APP_VERSION);
   assert.equal(CONFIG_BUILD_ID, BUILD_ID);
-  assert.equal(AUTH_ENABLED, false);
+  assert.equal(typeof AUTH_ENABLED, 'boolean');
 });

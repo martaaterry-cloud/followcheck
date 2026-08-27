@@ -2,25 +2,39 @@ import './styles.css';
 import { APP_VERSION, BUILD_ID, AUTH_ENABLED, META_ACCOUNTS_CENTER_URL } from './config.js';
 import { parseInstagramZip } from './instagramImport.js';
 import { compareSnapshots, calculateNotFollowingBack } from './compare.js';
-import { getLatestSnapshot, saveSnapshot, getActivity, appendActivity } from './repository.js';
-import { getAuthUser, sendOtpEmail, logoutUser, subscribeToAuth } from './auth.js';
+import {
+  getLatestSnapshot, saveSnapshot,
+  getActivity, appendActivity,
+  getRemotePreferences, upsertRemotePreferences, upsertSingleRemotePreference
+} from './repository.js';
+import {
+  getAuthUser, loginWithPassword, registerWithPassword, resetPassword,
+  logoutUser, subscribeToAuth
+} from './auth.js';
 import { supabaseReady } from './supabase.js';
-import { loadLocalKnownAccounts, saveLocalKnownAccounts } from './storage.js';
+import {
+  loadLocalKnownAccounts, saveLocalKnownAccounts,
+  loadLocalSnapshot, loadLocalActivity
+} from './storage.js';
 import { syncKnownAccounts, classifyAccount, categorizeNotFollowingBack } from './accounts.js';
 import { initPwa, checkPwaUpdate, applyPwaUpdate, reloadApp } from './pwa.js';
 import { loadExportState, recordExportRequested, recordSuccessfulImport, isExportPending } from './exportState.js';
+import {
+  reconcilePreferences, deduplicateActivity,
+  hasLocalDataToMigrate, isLocalDataMigrated, markLocalDataMigrated,
+  knownAccountToPreferenceRow
+} from './sync.js';
 
 const state = {
   user: null,
-  snapshot: null,
-  activity: [],
+  snapshot: loadLocalSnapshot(),
+  activity: loadLocalActivity(),
   knownAccounts: loadLocalKnownAccounts(),
   exportState: loadExportState(),
   lastImportOutcome: localStorage.getItem('fc_last_outcome') || null,
   currentView: 'homeView', // 'homeView' | 'notBackView' | 'activityView' | 'settingsView'
   notBackSearch: '',
   activityFilter: 'all', // 'all' | 'unfollowed' | 'followed'
-  pendingEmail: '',
   activeMenuUser: null,
   collapsedCategories: {
     famous: true,
@@ -30,6 +44,20 @@ const state = {
   pwaStatusText: 'Estás usando la última versión.',
   pwaUpdateAvailable: false,
   isCheckingUpdate: false,
+
+  // Autenticación tipo Orbit
+  authView: 'login', // 'login' | 'register' | 'forgot'
+  authEmail: '',
+  authPassword: '',
+  authConfirmPassword: '',
+  authError: '',
+  authSuccess: '',
+  isAuthLoading: false,
+
+  // Sincronización Nube + Dispositivo
+  syncStatus: 'idle', // 'idle' | 'syncing' | 'synced' | 'offline' | 'error'
+  lastSyncAt: localStorage.getItem('fc_last_sync_at') || null,
+  showMigrationPrompt: false,
 
   // Modal de actualización guiada
   isUpdateModalOpen: false,
@@ -74,35 +102,106 @@ const icons = {
   close: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`
 };
 
-let cooldownTimer = null;
-let cooldownSeconds = 0;
-
-function startCooldown(seconds = 60) {
-  cooldownSeconds = seconds;
-  const btn = document.querySelector('#sendOtpBtn');
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = `Reenviar en ${cooldownSeconds}s`;
-
-  if (cooldownTimer) clearInterval(cooldownTimer);
-  cooldownTimer = setInterval(() => {
-    cooldownSeconds -= 1;
-    const currentBtn = document.querySelector('#sendOtpBtn');
-    if (cooldownSeconds <= 0) {
-      clearInterval(cooldownTimer);
-      cooldownTimer = null;
-      if (currentBtn) {
-        currentBtn.disabled = false;
-        currentBtn.textContent = 'Enviar enlace de acceso';
-      }
-    } else if (currentBtn) {
-      currentBtn.textContent = `Reenviar en ${cooldownSeconds}s`;
-    }
-  }, 1000);
-}
-
 function renderAuth() {
   const app = document.querySelector('#app');
+
+  let formHtml = '';
+  if (state.authView === 'login') {
+    formHtml = `
+      <h2>Iniciar sesión</h2>
+      <p class="sub">Accede a tu cuenta privada para sincronizar tus datos.</p>
+
+      <form class="auth-form" id="loginForm">
+        <input
+          id="authEmailInput"
+          type="email"
+          placeholder="tu@email.com"
+          value="${esc(state.authEmail)}"
+          required
+          autocomplete="email"
+        />
+        <input
+          id="authPasswordInput"
+          type="password"
+          placeholder="Contraseña"
+          value="${esc(state.authPassword)}"
+          required
+          autocomplete="current-password"
+        />
+        <button type="submit" class="primary" id="submitAuthBtn" ${state.isAuthLoading ? 'disabled' : ''}>
+          ${state.isAuthLoading ? 'Iniciando sesión…' : 'Iniciar sesión'}
+        </button>
+      </form>
+
+      <div style="margin-top: 14px; display: flex; flex-direction: column; gap: 8px;">
+        <button type="button" class="ghost" id="toRegisterBtn">¿No tienes cuenta? Crear cuenta</button>
+        <button type="button" class="ghost" id="toForgotBtn" style="border: none; font-size: 12px;">¿Has olvidado tu contraseña?</button>
+      </div>
+    `;
+  } else if (state.authView === 'register') {
+    formHtml = `
+      <h2>Crear cuenta</h2>
+      <p class="sub">Registra tu usuario privado para almacenar tus datos de forma segura.</p>
+
+      <form class="auth-form" id="registerForm">
+        <input
+          id="authEmailInput"
+          type="email"
+          placeholder="tu@email.com"
+          value="${esc(state.authEmail)}"
+          required
+          autocomplete="email"
+        />
+        <input
+          id="authPasswordInput"
+          type="password"
+          placeholder="Contraseña (mínimo 6 caracteres)"
+          value="${esc(state.authPassword)}"
+          required
+          autocomplete="new-password"
+        />
+        <input
+          id="authConfirmPasswordInput"
+          type="password"
+          placeholder="Confirmar contraseña"
+          value="${esc(state.authConfirmPassword)}"
+          required
+          autocomplete="new-password"
+        />
+        <button type="submit" class="primary" id="submitAuthBtn" ${state.isAuthLoading ? 'disabled' : ''}>
+          ${state.isAuthLoading ? 'Creando cuenta…' : 'Crear cuenta'}
+        </button>
+      </form>
+
+      <div style="margin-top: 14px;">
+        <button type="button" class="ghost" id="toLoginBtn" style="width: 100%;">¿Ya tienes cuenta? Iniciar sesión</button>
+      </div>
+    `;
+  } else if (state.authView === 'forgot') {
+    formHtml = `
+      <h2>Recuperar contraseña</h2>
+      <p class="sub">Introduce tu correo para recibir un enlace oficial de recuperación.</p>
+
+      <form class="auth-form" id="forgotForm">
+        <input
+          id="authEmailInput"
+          type="email"
+          placeholder="tu@email.com"
+          value="${esc(state.authEmail)}"
+          required
+          autocomplete="email"
+        />
+        <button type="submit" class="primary" id="submitAuthBtn" ${state.isAuthLoading ? 'disabled' : ''}>
+          ${state.isAuthLoading ? 'Enviando…' : 'Enviar enlace de recuperación'}
+        </button>
+      </form>
+
+      <div style="margin-top: 14px;">
+        <button type="button" class="ghost" id="toLoginBtn" style="width: 100%;">Volver a Iniciar sesión</button>
+      </div>
+    `;
+  }
+
   app.innerHTML = `
     <main class="app auth-view">
       <header>
@@ -112,62 +211,221 @@ function renderAuth() {
         </div>
       </header>
 
-      <section class="card auth-card">
-        <h2>Acceso Privado</h2>
-        <p>Inicia sesión con tu correo para sincronizar tus seguidores de forma privada y segura con Supabase.</p>
+      <section class="card auth-card" style="padding: 20px;">
+        ${formHtml}
 
-        <form class="auth-form" id="authEmailForm">
-          <input
-            id="authEmailInput"
-            type="email"
-            placeholder="tu@email.com"
-            value="${esc(state.pendingEmail)}"
-            required
-            autocomplete="email"
-          />
-          <button type="submit" class="primary" id="sendOtpBtn" ${cooldownSeconds > 0 ? 'disabled' : ''}>
-            ${cooldownSeconds > 0 ? `Reenviar en ${cooldownSeconds}s` : 'Enviar enlace de acceso'}
-          </button>
-        </form>
+        ${state.authError ? `
+          <div class="status error" style="margin-top: 14px;">${esc(state.authError)}</div>
+        ` : ''}
 
-        <div class="status" id="authStatus"></div>
+        ${state.authSuccess ? `
+          <div class="status success" style="margin-top: 14px;">${esc(state.authSuccess)}</div>
+        ` : ''}
       </section>
     </main>
   `;
 
-  const emailForm = document.querySelector('#authEmailForm');
-  const authStatus = document.querySelector('#authStatus');
+  attachAuthListeners();
+}
 
-  emailForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const emailInput = document.querySelector('#authEmailInput');
-    const btn = document.querySelector('#sendOtpBtn');
-    const email = emailInput.value.trim();
+function attachAuthListeners() {
+  const emailInput = document.querySelector('#authEmailInput');
+  const passInput = document.querySelector('#authPasswordInput');
+  const confirmPassInput = document.querySelector('#authConfirmPasswordInput');
 
-    if (!email || cooldownSeconds > 0) return;
+  if (emailInput) {
+    emailInput.addEventListener('input', (e) => { state.authEmail = e.target.value; });
+  }
+  if (passInput) {
+    passInput.addEventListener('input', (e) => { state.authPassword = e.target.value; });
+  }
+  if (confirmPassInput) {
+    confirmPassInput.addEventListener('input', (e) => { state.authConfirmPassword = e.target.value; });
+  }
 
-    btn.disabled = true;
-    authStatus.className = 'status';
-    authStatus.textContent = 'Enviando enlace de acceso…';
+  const toRegisterBtn = document.querySelector('#toRegisterBtn');
+  if (toRegisterBtn) {
+    toRegisterBtn.addEventListener('click', () => {
+      state.authView = 'register';
+      state.authError = '';
+      state.authSuccess = '';
+      render();
+    });
+  }
 
-    try {
-      await sendOtpEmail(email);
-      state.pendingEmail = email;
-      authStatus.className = 'status success';
-      authStatus.textContent = 'Te hemos enviado un enlace de acceso. Abre tu correo y pulsa Sign in.';
-      startCooldown(60);
-    } catch (err) {
-      const errMsg = String(err?.message || '').toLowerCase();
-      authStatus.className = 'status error';
-      if (errMsg.includes('rate limit') || err?.status === 429) {
-        authStatus.textContent = 'Has solicitado demasiados enlaces. Espera unos minutos antes de volver a intentarlo.';
-        startCooldown(60);
-      } else {
-        authStatus.textContent = `Error: ${err.message}`;
-        btn.disabled = false;
+  const toLoginBtn = document.querySelector('#toLoginBtn');
+  if (toLoginBtn) {
+    toLoginBtn.addEventListener('click', () => {
+      state.authView = 'login';
+      state.authError = '';
+      state.authSuccess = '';
+      render();
+    });
+  }
+
+  const toForgotBtn = document.querySelector('#toForgotBtn');
+  if (toForgotBtn) {
+    toForgotBtn.addEventListener('click', () => {
+      state.authView = 'forgot';
+      state.authError = '';
+      state.authSuccess = '';
+      render();
+    });
+  }
+
+  const loginForm = document.querySelector('#loginForm');
+  if (loginForm) {
+    loginForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      state.isAuthLoading = true;
+      state.authError = '';
+      state.authSuccess = '';
+      render();
+
+      try {
+        const data = await loginWithPassword(state.authEmail, state.authPassword);
+        state.user = data.user;
+        state.isAuthLoading = false;
+        await onUserAuthenticated(data.user);
+      } catch (err) {
+        state.isAuthLoading = false;
+        state.authError = err.message;
+        render();
       }
+    });
+  }
+
+  const registerForm = document.querySelector('#registerForm');
+  if (registerForm) {
+    registerForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      state.isAuthLoading = true;
+      state.authError = '';
+      state.authSuccess = '';
+      render();
+
+      try {
+        const data = await registerWithPassword(state.authEmail, state.authPassword, state.authConfirmPassword);
+        state.isAuthLoading = false;
+        if (data.session) {
+          state.user = data.user;
+          await onUserAuthenticated(data.user);
+        } else {
+          state.authSuccess = 'Cuenta creada. Por favor, comprueba tu correo si se requiere confirmación e inicia sesión.';
+          state.authView = 'login';
+          render();
+        }
+      } catch (err) {
+        state.isAuthLoading = false;
+        state.authError = err.message;
+        render();
+      }
+    });
+  }
+
+  const forgotForm = document.querySelector('#forgotForm');
+  if (forgotForm) {
+    forgotForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      state.isAuthLoading = true;
+      state.authError = '';
+      state.authSuccess = '';
+      render();
+
+      try {
+        await resetPassword(state.authEmail);
+        state.isAuthLoading = false;
+        state.authSuccess = 'Se ha enviado un enlace a tu correo para restablecer la contraseña.';
+        render();
+      } catch (err) {
+        state.isAuthLoading = false;
+        state.authError = err.message;
+        render();
+      }
+    });
+  }
+}
+
+async function syncWithCloud(silent = false) {
+  if (!AUTH_ENABLED || !supabaseReady() || !state.user) return;
+
+  try {
+    if (!silent) {
+      state.syncStatus = 'syncing';
+      render();
     }
-  });
+
+    const userId = state.user.id;
+
+    // 1. Sincronizar Snapshot
+    const remoteSnapshot = await getLatestSnapshot();
+    if (remoteSnapshot) {
+      state.snapshot = remoteSnapshot;
+    } else if (state.snapshot && state.snapshot.followers && state.snapshot.followers.length > 0) {
+      // Subir snapshot local si no hay en remoto
+      await saveSnapshot(state.snapshot);
+    }
+
+    // 2. Sincronizar Activity
+    const remoteActivity = await getActivity();
+    state.activity = deduplicateActivity(state.activity, remoteActivity);
+
+    // 3. Sincronizar Account Preferences (knownAccounts)
+    const remotePrefs = await getRemotePreferences(userId);
+    const { mergedKnownAccounts, pendingPushRows } = reconcilePreferences(state.knownAccounts, remotePrefs, userId);
+
+    state.knownAccounts = mergedKnownAccounts;
+    saveLocalKnownAccounts(mergedKnownAccounts);
+
+    if (pendingPushRows.length > 0) {
+      await upsertRemotePreferences(userId, pendingPushRows);
+    }
+
+    const now = new Date().toISOString();
+    state.lastSyncAt = now;
+    localStorage.setItem('fc_last_sync_at', now);
+    state.syncStatus = 'synced';
+  } catch (err) {
+    console.warn('Error durante sincronización con Supabase:', err);
+    state.syncStatus = 'error';
+  } finally {
+    render();
+  }
+}
+
+async function onUserAuthenticated(user) {
+  state.user = user;
+
+  // Comprobar si hay datos locales previos que no se hayan migrado
+  if (hasLocalDataToMigrate(state.snapshot, state.activity, state.knownAccounts) && !isLocalDataMigrated(user.id)) {
+    state.showMigrationPrompt = true;
+    render();
+  } else {
+    markLocalDataMigrated(user.id);
+    await syncWithCloud(false);
+  }
+}
+
+function renderMigrationModal() {
+  if (!state.showMigrationPrompt) return '';
+
+  return `
+    <div class="modal-backdrop" id="migrationModalBackdrop">
+      <div class="modal-sheet">
+        <div class="modal-header">
+          <h3 class="modal-title">Datos guardados en este dispositivo</h3>
+        </div>
+        <p class="sub" style="margin-top: 0; line-height: 1.5;">
+          Hemos detectado datos e importaciones previas en este navegador. ¿Deseas sincronizarlos y vincularlos a tu cuenta de usuario?
+        </p>
+
+        <div style="margin: 20px 0 10px; display: flex; flex-direction: column; gap: 8px;">
+          <button id="btnConfirmMigration" class="primary">Sincronizar con mi cuenta</button>
+          <button id="btnDismissMigration" class="ghost">Mantener solo local por ahora</button>
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 function renderAccountPopover(u, category, acc) {
@@ -306,7 +564,7 @@ function renderUpdateModal() {
         Volver al paso anterior
       </button>
 
-      <div class="privacy-note">Tus datos nunca salen de este navegador.</div>
+      <div class="privacy-note">Tus datos nunca salen de este navegador sin tu consentimiento.</div>
     `;
   } else if (step === 3) {
     const res = state.lastImportResult || {};
@@ -400,7 +658,6 @@ function renderApp() {
             <span class="user-tag" title="${esc(state.user?.email || '')}">
               ${esc(state.user?.email || (supabaseReady() ? 'Conectado' : 'Modo local'))}
             </span>
-            ${state.user ? '<button class="btn-logout" id="logoutBtn">Salir</button>' : ''}
           </div>
         ` : ''}
       </header>
@@ -600,8 +857,52 @@ function renderApp() {
         <div class="section">
           <div class="section-title">
             <h2>Ajustes</h2>
-            <small>Diagnóstico y control de versión</small>
+            <small>Configuración y estado</small>
           </div>
+
+          <!-- Sección Cuenta -->
+          <div class="card settings-card">
+            <div class="settings-title">Cuenta</div>
+            <div class="settings-list">
+              <div class="settings-item">
+                <span class="settings-label">Usuario</span>
+                <span class="settings-value">${esc(state.user?.email || 'Modo local')}</span>
+              </div>
+              <div class="settings-item">
+                <span class="settings-label">Estado</span>
+                <span class="settings-value">${AUTH_ENABLED && state.user ? 'Sesión activa' : 'Desconectado'}</span>
+              </div>
+            </div>
+            ${AUTH_ENABLED && state.user ? `
+              <div style="margin-top: 12px;">
+                <button class="ghost" id="logoutBtn" style="width: 100%; color: var(--bad); border-color: rgba(255, 71, 87, 0.2);">
+                  Cerrar sesión
+                </button>
+              </div>
+            ` : ''}
+          </div>
+
+          <!-- Sección Sincronización -->
+          ${AUTH_ENABLED && state.user ? `
+            <div class="card settings-card">
+              <div class="settings-title">Sincronización en la Nube</div>
+              <div class="settings-list">
+                <div class="settings-item">
+                  <span class="settings-label">Estado</span>
+                  <span class="settings-value">${state.syncStatus === 'syncing' ? 'Sincronizando…' : (state.syncStatus === 'error' ? 'Error al sincronizar' : 'Sincronizado')}</span>
+                </div>
+                <div class="settings-item">
+                  <span class="settings-label">Última sincronización</span>
+                  <span class="settings-value">${formatDate(state.lastSyncAt)}</span>
+                </div>
+              </div>
+              <div style="margin-top: 12px;">
+                <button class="secondary" id="syncNowBtn" style="width: 100%;" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
+                  ${state.syncStatus === 'syncing' ? 'Sincronizando…' : 'Sincronizar ahora'}
+                </button>
+              </div>
+            </div>
+          ` : ''}
 
           <!-- Diagnóstico del sistema -->
           <div class="card settings-card">
@@ -617,11 +918,7 @@ function renderApp() {
               </div>
               <div class="settings-item">
                 <span class="settings-label">Almacenamiento</span>
-                <span class="settings-value">${AUTH_ENABLED ? (supabaseReady() ? 'Nube Supabase' : 'Modo local') : 'Almacenamiento local'}</span>
-              </div>
-              <div class="settings-item">
-                <span class="settings-label">Autenticación</span>
-                <span class="settings-value">${AUTH_ENABLED ? (state.user ? esc(state.user.email) : 'Sin sesión activa') : 'Desactivada (Modo local)'}</span>
+                <span class="settings-value">${AUTH_ENABLED && state.user ? 'Nube Supabase + Dispositivo' : 'Almacenamiento local'}</span>
               </div>
               <div class="settings-item">
                 <span class="settings-label">Última importación</span>
@@ -654,16 +951,11 @@ function renderApp() {
               </button>
             </div>
           </div>
-
-          <!-- Zonas futuras preparadas -->
-          <div class="card settings-card future-box">
-            <div class="settings-title">Sincronización y Privacidad</div>
-            <div class="sub">Próximamente: exportar datos, respaldos y sincronización multi-dispositivo.</div>
-          </div>
         </div>
       </section>
 
       ${renderUpdateModal()}
+      ${renderMigrationModal()}
     </main>
 
     <nav>
@@ -695,8 +987,38 @@ function attachAppListeners() {
     logoutBtn.addEventListener('click', async () => {
       await logoutUser();
       state.user = null;
-      state.snapshot = null;
-      state.activity = [];
+      state.syncStatus = 'idle';
+      render();
+    });
+  }
+
+  const syncNowBtn = document.querySelector('#syncNowBtn');
+  if (syncNowBtn) {
+    syncNowBtn.addEventListener('click', async () => {
+      await syncWithCloud(false);
+    });
+  }
+
+  // Controles del Modal de Migración
+  const btnConfirmMigration = document.querySelector('#btnConfirmMigration');
+  if (btnConfirmMigration) {
+    btnConfirmMigration.addEventListener('click', async () => {
+      state.showMigrationPrompt = false;
+      if (state.user) {
+        markLocalDataMigrated(state.user.id);
+        await syncWithCloud(false);
+      }
+      render();
+    });
+  }
+
+  const btnDismissMigration = document.querySelector('#btnDismissMigration');
+  if (btnDismissMigration) {
+    btnDismissMigration.addEventListener('click', () => {
+      state.showMigrationPrompt = false;
+      if (state.user) {
+        markLocalDataMigrated(state.user.id);
+      }
       render();
     });
   }
@@ -757,7 +1079,7 @@ function attachAppListeners() {
 
   // Acciones en sugerencias rápidas
   document.querySelectorAll('[data-sug-action]').forEach(sugBtn => {
-    sugBtn.addEventListener('click', (e) => {
+    sugBtn.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
       const action = sugBtn.dataset.sugAction;
@@ -773,12 +1095,16 @@ function attachAppListeners() {
 
       saveLocalKnownAccounts(state.knownAccounts);
       render();
+
+      if (AUTH_ENABLED && state.user && state.knownAccounts[user]) {
+        upsertSingleRemotePreference(state.user.id, user, state.knownAccounts[user]);
+      }
     });
   });
 
   // Acciones dentro del menú contextual
   document.querySelectorAll('.popover-item').forEach(actionBtn => {
-    actionBtn.addEventListener('click', (e) => {
+    actionBtn.addEventListener('click', async (e) => {
       e.preventDefault();
       e.stopPropagation();
       const action = actionBtn.dataset.action;
@@ -801,6 +1127,10 @@ function attachAppListeners() {
       saveLocalKnownAccounts(state.knownAccounts);
       state.activeMenuUser = null;
       render();
+
+      if (AUTH_ENABLED && state.user && state.knownAccounts[user]) {
+        upsertSingleRemotePreference(state.user.id, user, state.knownAccounts[user]);
+      }
     });
   });
 
@@ -931,6 +1261,14 @@ function attachAppListeners() {
         state.knownAccounts = syncKnownAccounts(state.knownAccounts, current);
         saveLocalKnownAccounts(state.knownAccounts);
 
+        // Si está conectado, sincronizar preferencias
+        if (AUTH_ENABLED && state.user) {
+          const rows = Object.entries(state.knownAccounts).map(([u, acc]) =>
+            knownAccountToPreferenceRow(state.user.id, u, acc)
+          );
+          upsertRemotePreferences(state.user.id, rows);
+        }
+
         // Registrar fecha de importación exitosa
         recordSuccessfulImport();
         state.exportState = loadExportState();
@@ -1017,6 +1355,8 @@ function render() {
 async function boot() {
   try {
     state.knownAccounts = loadLocalKnownAccounts();
+    state.snapshot = loadLocalSnapshot();
+    state.activity = loadLocalActivity();
     state.exportState = loadExportState();
 
     // Inicializar ciclo de vida de PWA
@@ -1033,26 +1373,14 @@ async function boot() {
       subscribeToAuth(async (event, session) => {
         state.user = session?.user || null;
         if (state.user) {
-          state.snapshot = await getLatestSnapshot();
-          state.activity = await getActivity();
-          if (state.snapshot) {
-            state.knownAccounts = syncKnownAccounts(state.knownAccounts, state.snapshot);
-            saveLocalKnownAccounts(state.knownAccounts);
-          }
+          await onUserAuthenticated(state.user);
         } else {
-          state.snapshot = null;
-          state.activity = [];
+          render();
         }
-        render();
       });
-    }
 
-    if (!AUTH_ENABLED || state.user || !supabaseReady()) {
-      state.snapshot = await getLatestSnapshot();
-      state.activity = await getActivity();
-      if (state.snapshot) {
-        state.knownAccounts = syncKnownAccounts(state.knownAccounts, state.snapshot);
-        saveLocalKnownAccounts(state.knownAccounts);
+      if (state.user) {
+        await onUserAuthenticated(state.user);
       }
     }
   } catch (err) {
