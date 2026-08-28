@@ -8,10 +8,11 @@ import {
   getRemotePreferences, upsertRemotePreferences, upsertSingleRemotePreference,
   deleteRemotePreferences,
   getRemoteProfile, saveRemoteProfile,
-  getRemoteCategories, saveRemoteCategories, deleteRemoteCategory,
+  getRemoteCategories, saveRemoteCategories, deleteRemoteCategory, deleteRemoteCategoriesByIds,
   getRemoteCategoryMemberships, saveRemoteAccountCategories,
   deleteRemoteCategoryMemberships
 } from './repository.js';
+
 import {
   getAuthUser, getAuthSession, loginWithPassword, registerWithPassword, resetPassword, updateUserPassword,
   logoutUser, subscribeToAuth
@@ -835,33 +836,61 @@ async function pushLocalStateToCloud() {
       }
     }
 
-    // 3. Subir Categorías, Memberships y Preferencias (Local es la fuente de verdad)
+    // 3. Subir Categorías, Memberships y Preferencias con Mirror Exacto
     try {
+      const remotePrefs = await getRemotePreferences(userId);
       const remoteCats = await getRemoteCategories(userId);
+      const remoteMemberships = await getRemoteCategoryMemberships(userId);
+
       const pushPrep = prepareLocalStateForPush({
         userId,
         localKnownAccounts: state.knownAccounts,
         localCategories: state.categories,
         remoteCategories: remoteCats,
-        localCategoryMemberships: state.categoryMemberships
+        localCategoryMemberships: state.categoryMemberships,
+        remotePreferences: remotePrefs,
+        remoteMemberships: remoteMemberships
       });
 
+      // A. Eliminar preferencias remotas obsoletas (que ya no existen en este dispositivo)
+      if (pushPrep.obsoleteRemoteUsernames.length > 0) {
+        await deleteRemotePreferences(userId, pushPrep.obsoleteRemoteUsernames);
+        console.log(`[push-mirror] deleted ${pushPrep.obsoleteRemoteUsernames.length} obsolete preferences`);
+      }
+
+      // B. Eliminar memberships remotas obsoletas (usuarios sin asignaciones locales)
+      if (pushPrep.obsoleteMembershipUsernames.length > 0) {
+        await deleteRemoteCategoryMemberships(userId, pushPrep.obsoleteMembershipUsernames);
+        console.log(`[push-mirror] deleted ${pushPrep.obsoleteMembershipUsernames.length} obsolete memberships`);
+      }
+
+      // C. Eliminar categorías remotas obsoletas (que ya no existen localmente)
+      if (pushPrep.obsoleteRemoteCategoryIds.length > 0) {
+        await deleteRemoteCategoriesByIds(userId, pushPrep.obsoleteRemoteCategoryIds);
+        console.log(`[push-mirror] deleted ${pushPrep.obsoleteRemoteCategoryIds.length} obsolete categories`);
+      }
+
+      // D. Crear categorías que falten
       if (pushPrep.categoriesToUpsert.length > 0) {
         await saveRemoteCategories(userId, pushPrep.categoriesToUpsert);
       }
 
+      // E. Obtener categorías remotas canónicas actualizadas y remapear
       const updatedRemoteCats = await getRemoteCategories(userId);
       const finalPushPrep = prepareLocalStateForPush({
         userId,
         localKnownAccounts: state.knownAccounts,
         localCategories: state.categories,
         remoteCategories: updatedRemoteCats,
-        localCategoryMemberships: state.categoryMemberships
+        localCategoryMemberships: state.categoryMemberships,
+        remotePreferences: [],
+        remoteMemberships: {}
       });
 
       state.categories = finalPushPrep.canonicalCategories;
       saveLocalCategories(state.categories);
 
+      // F. Reemplazar memberships de cada cuenta local en remoto
       for (const item of finalPushPrep.membershipsToSave) {
         await saveRemoteAccountCategories(userId, item.user, item.categoryIds);
       }
@@ -869,6 +898,7 @@ async function pushLocalStateToCloud() {
       state.categoryMemberships = finalPushPrep.remappedMemberships;
       saveLocalCategoryMemberships(state.categoryMemberships);
 
+      // G. Upsert de todas las preferencias locales
       if (finalPushPrep.preferenceRows.length > 0) {
         await upsertRemotePreferences(userId, finalPushPrep.preferenceRows);
       }
@@ -912,12 +942,13 @@ async function pushLocalStateToCloud() {
         state.syncError = '';
       } else {
         state.syncStatus = 'error';
-        state.syncError = 'Discrepancia detectada tras la subida: ' + verification.errors.join('; ');
+        state.syncError = verification.formattedSummary || ('Discrepancia detectada tras la subida: ' + verification.errors.slice(0, 3).join('; '));
       }
     } else {
       state.syncStatus = 'error';
       state.syncError = 'No se han podido subir todos los datos: ' + errors.join('; ');
     }
+
   } catch (err) {
     console.warn('[push] fatal error:', err);
     state.syncStatus = 'error';

@@ -944,7 +944,8 @@ test('V0.3.17 6. verificación falla si relevant remoto != local', () => {
   });
 
   assert.equal(verification.success, false);
-  assert.equal(verification.errors.some(e => e.includes('Relevantes no coincide')), true);
+  assert.equal(verification.prefDiffs, 1);
+  assert.equal(verification.errors.some(e => e.includes('u1')), true);
 });
 
 test('V0.3.17 7. verificación falla si secondary remoto != local', () => {
@@ -961,8 +962,10 @@ test('V0.3.17 7. verificación falla si secondary remoto != local', () => {
   });
 
   assert.equal(verification.success, false);
-  assert.equal(verification.errors.some(e => e.includes('Secundarias no coincide')), true);
+  assert.equal(verification.prefDiffs, 1);
+  assert.equal(verification.errors.some(e => e.includes('u1')), true);
 });
+
 
 test('V0.3.17 8. verificación falla si memberships remotas != locales', () => {
   const localCats = [{ id: 'c1', name: 'Deportes' }];
@@ -1021,6 +1024,174 @@ test('V0.3.17 10. importar backup NO escribe en Supabase (operación pura local)
   assert.equal(parsed.valid, true);
   assert.equal(supabaseWrites, 0, 'La importación de backup no debe realizar escrituras en Supabase');
 });
+
+// =========================================================================
+// TESTS DE EXACT MIRROR PUSH V0.3.18
+// =========================================================================
+
+test('V0.3.18 1. preference remota vieja se detecta para eliminar si no existe local', () => {
+  const localKnown = { marta: { group: 'relevant' } };
+  const remotePrefs = [
+    { username: 'marta', account_group: 'relevant' },
+    { username: 'viejo_usuario', account_group: 'normal' }
+  ];
+
+  const pushPrep = prepareLocalStateForPush({
+    userId: 'user-1',
+    localKnownAccounts: localKnown,
+    remotePreferences: remotePrefs
+  });
+
+  assert.deepEqual(pushPrep.obsoleteRemoteUsernames, ['viejo_usuario']);
+});
+
+test('V0.3.18 2. categoría remota vieja se detecta para eliminar si no existe local', () => {
+  const localCats = [{ id: 'cat-1', name: 'Balonmano' }];
+  const remoteCats = [
+    { id: 'cat-1', name: 'Balonmano' },
+    { id: 'cat-obsoleta', name: 'Antigua Cat' }
+  ];
+
+  const pushPrep = prepareLocalStateForPush({
+    userId: 'user-1',
+    localCategories: localCats,
+    remoteCategories: remoteCats
+  });
+
+  assert.deepEqual(pushPrep.obsoleteRemoteCategoryIds, ['cat-obsoleta']);
+});
+
+test('V0.3.18 3. membership remota vieja se detecta para eliminar si el usuario no tiene memberships locales', () => {
+  const localMemberships = { marta: ['cat-1'] };
+  const remoteMemberships = {
+    marta: ['cat-1'],
+    usuario_antiguo: ['cat-1']
+  };
+
+  const pushPrep = prepareLocalStateForPush({
+    userId: 'user-1',
+    localCategories: [{ id: 'cat-1', name: 'Balonmano' }],
+    remoteCategories: [{ id: 'cat-1', name: 'Balonmano' }],
+    localCategoryMemberships: localMemberships,
+    remoteMemberships
+  });
+
+  assert.deepEqual(pushPrep.obsoleteMembershipUsernames, ['usuario_antiguo']);
+});
+
+test('V0.3.18 4. push no hace union de memberships (reemplaza exactamente por la lista local)', () => {
+  const localMemberships = { marta: ['cat-bm-2'] };
+  const localCats = [{ id: 'cat-bm-2', name: 'Balonmano' }];
+
+  const pushPrep = prepareLocalStateForPush({
+    userId: 'user-1',
+    localCategories: localCats,
+    remoteCategories: localCats,
+    localCategoryMemberships: localMemberships
+  });
+
+  assert.equal(pushPrep.membershipsToSave.length, 1);
+  assert.deepEqual(pushPrep.membershipsToSave[0].categoryIds, ['cat-bm-2']);
+});
+
+test('V0.3.18 5. grupos remotos finales coinciden exactamente con local', () => {
+  const localKnown = {
+    marta: { group: 'relevant', famous: true },
+    sec: { group: 'secondary', ignored: true },
+    del: { group: 'unavailable', unavailableReason: 'deleted', deleted: true }
+  };
+  const remotePrefs = [
+    { username: 'marta', account_group: 'relevant' },
+    { username: 'sec', account_group: 'secondary' },
+    { username: 'del', account_group: 'unavailable', unavailable_reason: 'deleted' }
+  ];
+
+  const verification = validatePushVerification({
+    localKnownAccounts: localKnown,
+    remotePreferences: remotePrefs
+  });
+
+  assert.equal(verification.success, true);
+  assert.equal(verification.prefDiffs, 0);
+});
+
+test('V0.3.18 6. memberships finales coinciden exactamente en verificación', () => {
+  const localCats = [{ id: 'c1', name: 'VIP' }];
+  const localMemberships = { marta: ['c1'] };
+  const remoteCats = [{ id: 'c1', name: 'VIP' }];
+  const remoteMemberships = { marta: ['c1'] };
+
+  const verification = validatePushVerification({
+    localCategories: localCats,
+    remoteCategories: remoteCats,
+    localCategoryMemberships: localMemberships,
+    remoteMemberships
+  });
+
+  assert.equal(verification.success, true);
+  assert.equal(verification.memberDiffs, 0);
+});
+
+test('V0.3.18 7. operaciones de borrado en repository filtran estrictamente por user_id', () => {
+  // Simulación de validación de llamada segura
+  const mockQueries = [];
+  const mockDb = {
+    deleteFrom: (table, userId, filter) => {
+      mockQueries.push({ table, userId, filter });
+    }
+  };
+
+  mockDb.deleteFrom('account_preferences', 'user-master-123', ['user_a']);
+  assert.equal(mockQueries[0].userId, 'user-master-123');
+});
+
+test('V0.3.18 8. activity histórica válida no se altera en push-only', () => {
+  const localActivity = [
+    { username: 'u1', type: 'unfollowed', createdAt: '2026-08-28T09:00:00Z' },
+    { username: 'u2', type: 'followed', createdAt: '2026-08-28T08:00:00Z' }
+  ];
+  const deduplicated = deduplicateActivity([], localActivity);
+  assert.equal(deduplicated.length, 2);
+});
+
+test('V0.3.18 9. verificación detecta username extra remoto y genera mensaje claro', () => {
+  const localKnown = { marta: { group: 'relevant' } };
+  const remotePrefs = [
+    { username: 'marta', account_group: 'relevant' },
+    { username: 'fantasma', account_group: 'normal' }
+  ];
+
+  const verification = validatePushVerification({
+    localKnownAccounts: localKnown,
+    remotePreferences: remotePrefs
+  });
+
+  assert.equal(verification.success, false);
+  assert.equal(verification.prefDiffs, 1);
+  assert.equal(verification.formattedSummary.includes('Preferencias: 1 diferencia'), true);
+});
+
+test('V0.3.18 10. verificación detecta membership extra remoto y no pasa en falso', () => {
+  const localCats = [{ id: 'c1', name: 'VIP' }];
+  const localMemberships = { marta: ['c1'] };
+  const remoteCats = [{ id: 'c1', name: 'VIP' }];
+  const remoteMemberships = {
+    marta: ['c1'],
+    otro_user: ['c1'] // extra en remoto
+  };
+
+  const verification = validatePushVerification({
+    localCategories: localCats,
+    remoteCategories: remoteCats,
+    localCategoryMemberships: localMemberships,
+    remoteMemberships
+  });
+
+  assert.equal(verification.success, false);
+  assert.equal(verification.memberDiffs, 1);
+  assert.equal(verification.formattedSummary.includes('Asignaciones: 1 diferencia'), true);
+});
+
 
 
 

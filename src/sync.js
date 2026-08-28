@@ -375,16 +375,37 @@ export function prepareLocalStateForPush({
   localKnownAccounts = {},
   localCategories = [],
   remoteCategories = [],
-  localCategoryMemberships = {}
+  localCategoryMemberships = {},
+  remotePreferences = [],
+  remoteMemberships = {}
 }) {
-  // 1. Reconciliar y mapear categorías al formato remoto canónico
+  // 1. Obsolete remote preferences to delete
+  const localUsernamesSet = new Set(Object.keys(localKnownAccounts || {}).map(u => u.toLowerCase().trim()));
+  const obsoleteRemoteUsernames = [];
+  for (const row of remotePreferences || []) {
+    const u = String(row.username).toLowerCase().trim();
+    if (!localUsernamesSet.has(u)) {
+      obsoleteRemoteUsernames.push(u);
+    }
+  }
+
+  // 2. Reconciliar y mapear categorías al formato remoto canónico
   const canonicalCats = [];
   const localIdToRemoteId = new Map();
   const remoteNameMap = new Map();
+  const localCatNamesSet = new Set((localCategories || []).map(c => c.name.toLowerCase().trim()));
 
   for (const rc of remoteCategories || []) {
     const normName = rc.name.toLowerCase().trim();
     remoteNameMap.set(normName, rc);
+  }
+
+  const obsoleteRemoteCategoryIds = [];
+  for (const rc of remoteCategories || []) {
+    const normName = rc.name.toLowerCase().trim();
+    if (!localCatNamesSet.has(normName)) {
+      obsoleteRemoteCategoryIds.push(rc.id);
+    }
   }
 
   const categoriesToUpsert = [];
@@ -401,7 +422,7 @@ export function prepareLocalStateForPush({
     }
   }
 
-  // 2. Mapear memberships usando IDs remotos canónicos
+  // 3. Mapear memberships usando IDs remotos canónicos
   const validCatIds = new Set(canonicalCats.map(c => c.id));
   const remappedMemberships = {};
   const membershipsToSave = [];
@@ -419,7 +440,17 @@ export function prepareLocalStateForPush({
     });
   }
 
-  // 3. Preparar filas de account_preferences
+  // Obsolete remote memberships: users that exist in remote memberships but NOT in localCategoryMemberships
+  const localMembershipUsersSet = new Set(Object.keys(localCategoryMemberships || {}).map(u => u.toLowerCase().trim()));
+  const obsoleteMembershipUsernames = [];
+  for (const rawUser of Object.keys(remoteMemberships || {})) {
+    const u = rawUser.toLowerCase().trim();
+    if (!localMembershipUsersSet.has(u)) {
+      obsoleteMembershipUsernames.push(u);
+    }
+  }
+
+  // 4. Preparar filas de account_preferences
   const preferenceRows = [];
   for (const [rawUser, acc] of Object.entries(localKnownAccounts || {})) {
     const normUser = rawUser.toLowerCase().trim();
@@ -432,7 +463,10 @@ export function prepareLocalStateForPush({
     localIdToRemoteId,
     remappedMemberships,
     membershipsToSave,
-    preferenceRows
+    preferenceRows,
+    obsoleteRemoteUsernames,
+    obsoleteRemoteCategoryIds,
+    obsoleteMembershipUsernames
   };
 }
 
@@ -448,7 +482,7 @@ export function createFollowCheckBackupJson({
 }) {
   return {
     followcheck_backup: true,
-    version: appVersion || '0.3.17',
+    version: appVersion || '0.3.18',
     timestamp: new Date().toISOString(),
     data: {
       snapshot: snapshot || null,
@@ -471,60 +505,120 @@ export function validatePushVerification({
   remoteMemberships = {}
 }) {
   const errors = [];
+  let prefDiffs = 0;
+  let catDiffs = 0;
+  let memberDiffs = 0;
 
-  // 1. Conteo por grupo
-  const localGroupCounts = { normal: 0, relevant: 0, secondary: 0, unavailable: 0 };
-  for (const acc of Object.values(localKnownAccounts || {})) {
-    const g = acc.group || (acc.deleted ? 'unavailable' : (acc.ignored ? 'secondary' : (acc.famous ? 'relevant' : 'normal')));
-    if (localGroupCounts[g] !== undefined) localGroupCounts[g]++;
+  // 1. Validar Preferences exactamente
+  const localAccountsMap = new Map();
+  for (const [u, acc] of Object.entries(localKnownAccounts || {})) {
+    const norm = u.toLowerCase().trim();
+    const group = acc.group || (acc.deleted ? 'unavailable' : (acc.ignored ? 'secondary' : (acc.famous ? 'relevant' : 'normal')));
+    const unavailableReason = group === 'unavailable' ? (acc.unavailableReason || (norm.startsWith('__deleted__') ? 'deleted' : 'manual')) : null;
+    localAccountsMap.set(norm, { group, unavailableReason });
   }
 
-  const remoteGroupCounts = { normal: 0, relevant: 0, secondary: 0, unavailable: 0 };
+  const remoteAccountsMap = new Map();
   for (const row of remotePreferences || []) {
-    const g = row.account_group || (row.deleted ? 'unavailable' : (row.ignored ? 'secondary' : (row.famous ? 'relevant' : 'normal')));
-    if (remoteGroupCounts[g] !== undefined) remoteGroupCounts[g]++;
+    const norm = String(row.username).toLowerCase().trim();
+    const group = row.account_group || (row.deleted ? 'unavailable' : (row.ignored ? 'secondary' : (row.famous ? 'relevant' : 'normal')));
+    const unavailableReason = row.unavailable_reason || (group === 'unavailable' ? 'manual' : null);
+    remoteAccountsMap.set(norm, { group, unavailableReason });
   }
 
-  if (localGroupCounts.relevant !== remoteGroupCounts.relevant) {
-    errors.push(`Relevantes no coincide (local=${localGroupCounts.relevant}, remoto=${remoteGroupCounts.relevant})`);
-  }
-  if (localGroupCounts.secondary !== remoteGroupCounts.secondary) {
-    errors.push(`Secundarias no coincide (local=${localGroupCounts.secondary}, remoto=${remoteGroupCounts.secondary})`);
-  }
-  if (localGroupCounts.unavailable !== remoteGroupCounts.unavailable) {
-    errors.push(`No disponibles no coincide (local=${localGroupCounts.unavailable}, remoto=${remoteGroupCounts.unavailable})`);
-  }
-
-  // 2. Conteo de categorías
-  if ((localCategories || []).length !== (remoteCategories || []).length) {
-    errors.push(`Categorías no coincide (local=${(localCategories || []).length}, remoto=${(remoteCategories || []).length})`);
+  // Detectar faltantes o diferentes en remoto
+  for (const [normUser, localData] of localAccountsMap.entries()) {
+    const remoteData = remoteAccountsMap.get(normUser);
+    if (!remoteData) {
+      errors.push(`Cuenta "${normUser}" falta en la nube`);
+      prefDiffs++;
+    } else if (remoteData.group !== localData.group) {
+      errors.push(`Grupo de "${normUser}" no coincide (local=${localData.group}, remoto=${remoteData.group})`);
+      prefDiffs++;
+    }
   }
 
-  // 3. Comparación de Memberships
+  // Detectar sobrantes en remoto
+  for (const normUser of remoteAccountsMap.keys()) {
+    if (!localAccountsMap.has(normUser)) {
+      errors.push(`Cuenta "${normUser}" está de más en la nube`);
+      prefDiffs++;
+    }
+  }
+
+  // 2. Validar Categorías exactamente
+  const localCatNames = new Set((localCategories || []).map(c => c.name.toLowerCase().trim()));
+  const remoteCatNames = new Set((remoteCategories || []).map(c => c.name.toLowerCase().trim()));
+
+  for (const name of localCatNames) {
+    if (!remoteCatNames.has(name)) {
+      errors.push(`Categoría "${name}" falta en la nube`);
+      catDiffs++;
+    }
+  }
+  for (const name of remoteCatNames) {
+    if (!localCatNames.has(name)) {
+      errors.push(`Categoría "${name}" sobra en la nube`);
+      catDiffs++;
+    }
+  }
+
+  // 3. Validar Memberships exactamente
   const remoteCatIdToName = new Map((remoteCategories || []).map(c => [c.id, c.name.toLowerCase().trim()]));
   const localCatIdToName = new Map((localCategories || []).map(c => [c.id, c.name.toLowerCase().trim()]));
 
-  let localMembershipTotal = 0;
+  const localUserMemberships = new Map();
   for (const [user, catIds] of Object.entries(localCategoryMemberships || {})) {
-    const expectedCatNames = (catIds || []).map(id => localCatIdToName.get(id)).filter(Boolean).sort();
-    localMembershipTotal += expectedCatNames.length;
-
-    const actualCatIds = remoteMemberships[user.toLowerCase().trim()] || [];
-    const actualCatNames = actualCatIds.map(id => remoteCatIdToName.get(id)).filter(Boolean).sort();
-
-    if (JSON.stringify(expectedCatNames) !== JSON.stringify(actualCatNames)) {
-      errors.push(`Memberships de "${user}" no coincide (esperado=${expectedCatNames.join(',')}, remoto=${actualCatNames.join(',')})`);
+    const norm = user.toLowerCase().trim();
+    const names = (catIds || []).map(id => localCatIdToName.get(id)).filter(Boolean).sort();
+    if (names.length > 0) {
+      localUserMemberships.set(norm, names);
     }
+  }
+
+  const remoteUserMemberships = new Map();
+  for (const [user, catIds] of Object.entries(remoteMemberships || {})) {
+    const norm = user.toLowerCase().trim();
+    const names = (catIds || []).map(id => remoteCatIdToName.get(id)).filter(Boolean).sort();
+    if (names.length > 0) {
+      remoteUserMemberships.set(norm, names);
+    }
+  }
+
+  for (const [user, expectedNames] of localUserMemberships.entries()) {
+    const actualNames = remoteUserMemberships.get(user) || [];
+    if (JSON.stringify(expectedNames) !== JSON.stringify(actualNames)) {
+      errors.push(`Memberships de "${user}" no coincide`);
+      memberDiffs++;
+    }
+  }
+
+  for (const user of remoteUserMemberships.keys()) {
+    if (!localUserMemberships.has(user)) {
+      errors.push(`Memberships de "${user}" sobran en la nube`);
+      memberDiffs++;
+    }
+  }
+
+  let formattedSummary = '';
+  if (errors.length > 0) {
+    const parts = [];
+    if (prefDiffs > 0) parts.push(`Preferencias: ${prefDiffs} diferencia${prefDiffs > 1 ? 's' : ''}`);
+    if (catDiffs > 0) parts.push(`Categorías: ${catDiffs} diferencia${catDiffs > 1 ? 's' : ''}`);
+    if (memberDiffs > 0) parts.push(`Asignaciones: ${memberDiffs} diferencia${memberDiffs > 1 ? 's' : ''}`);
+    formattedSummary = 'No se ha podido dejar la nube idéntica a este dispositivo: ' + parts.join(' · ');
   }
 
   return {
     success: errors.length === 0,
     errors,
-    localGroupCounts,
-    remoteGroupCounts,
-    localMembershipTotal
+    prefDiffs,
+    catDiffs,
+    memberDiffs,
+    formattedSummary
   };
 }
+
 
 export function parseAndValidateBackupJson(rawInput) {
   let parsed = null;

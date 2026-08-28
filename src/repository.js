@@ -350,5 +350,17 @@ export async function deleteRemoteCategoryMemberships(userId, usernames = []) {
   if (error) throw error;
 }
 
+export async function deleteRemoteCategoriesByIds(userId, categoryIds = []) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId || !categoryIds.length) return;
+  const { error } = await supabase
+    .from('categories')
+    .delete()
+    .eq('user_id', userId)
+    .in('id', categoryIds);
+
+  if (error) throw error;
+}
+
+
 
 
