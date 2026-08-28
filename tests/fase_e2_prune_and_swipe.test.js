@@ -18,23 +18,22 @@ import {
   isAccountUncategorized
 } from '../src/categories.js';
 
-test('1. selector de grupos maneja 3 grupos principales', () => {
-  const allowedGroups = ['notBack', 'relevant', 'secondary'];
-  assert.equal(allowedGroups.length, 3);
-  assert.equal(allowedGroups.includes('unavailable'), false);
+test('1. selector de grupos maneja los 4 grupos principales incluyendo unavailable', () => {
+  const allowedGroups = ['notBack', 'relevant', 'secondary', 'unavailable'];
+  assert.equal(allowedGroups.length, 4);
+  assert.equal(allowedGroups.includes('unavailable'), true);
 
   const known = {
     cuenta_inactiva: { group: 'unavailable', unavailableReason: 'deleted' }
   };
   const categorized = categorizeNotFollowingBack(['cuenta_inactiva'], known);
-  assert.equal(categorized.notFollowingBack.includes('cuenta_inactiva'), true);
-  assert.equal(categorized.unavailable.length, 0);
+  assert.equal(categorized.unavailable.includes('cuenta_inactiva'), true);
 });
 
-test('2. navegación entre los 3 grupos permitidos', () => {
+test('2. navegación entre los 4 grupos permitidos', () => {
   let stateSystemFilter = 'notBack';
   const setAccountGroup = (g) => {
-    if (['notBack', 'relevant', 'secondary'].includes(g)) {
+    if (['notBack', 'relevant', 'secondary', 'unavailable'].includes(g)) {
       stateSystemFilter = g;
     }
   };
@@ -45,26 +44,36 @@ test('2. navegación entre los 3 grupos permitidos', () => {
   setAccountGroup('secondary');
   assert.equal(stateSystemFilter, 'secondary');
 
-  setAccountGroup('notBack');
-  assert.equal(stateSystemFilter, 'notBack');
-
-  // unavailable ya no es un grupo válido
   setAccountGroup('unavailable');
+  assert.equal(stateSystemFilter, 'unavailable');
+
+  setAccountGroup('notBack');
   assert.equal(stateSystemFilter, 'notBack');
 });
 
 test('3. listener delegado resuelve tap en dataset data-account-group', () => {
-  const mockDataset = { accountGroup: 'notBack' };
-  assert.equal(mockDataset.accountGroup, 'notBack');
+  const mockDataset = { accountGroup: 'unavailable' };
+  assert.equal(mockDataset.accountGroup, 'unavailable');
 });
 
-test('4. aliases legacy no controlan navegación (se usan notBack, relevant, secondary)', () => {
-  const validNavGroups = ['notBack', 'relevant', 'secondary'];
-  const legacyAliases = ['famous', 'ignored', 'deleted', 'unavailable'];
+test('4. subfiltros dentro de No Disponibles (cuenta eliminada, ya no la sigo, posible bloqueo)', () => {
+  const known = {
+    u_del: { group: 'unavailable', unavailableReason: 'deleted' },
+    u_unf: { group: 'unavailable', unavailableReason: 'unfollowed' },
+    u_blk: { group: 'unavailable', unavailableReason: 'possible_block' }
+  };
 
-  for (const legacy of legacyAliases) {
-    assert.equal(validNavGroups.includes(legacy), false);
-  }
+  const list = ['u_del', 'u_unf', 'u_blk'];
+  const categorized = categorizeNotFollowingBack(list, known);
+  assert.equal(categorized.unavailable.length, 3);
+
+  const deletedList = categorized.unavailable.filter(u => isAutoDeleted(u) || known[u]?.unavailableReason === 'deleted');
+  const unfollowedList = categorized.unavailable.filter(u => known[u]?.unavailableReason === 'unfollowed');
+  const blockedList = categorized.unavailable.filter(u => known[u]?.unavailableReason === 'possible_block');
+
+  assert.deepEqual(deletedList, ['u_del']);
+  assert.deepEqual(unfollowedList, ['u_unf']);
+  assert.deepEqual(blockedList, ['u_blk']);
 });
 
 test('5. total No me siguen = following - followers', () => {
@@ -110,7 +119,7 @@ test('7. secondary sigue contando en total de no me siguen', () => {
   assert.equal(notBack.length, 1);
 });
 
-test('8. cuentas previamente marcadas unavailable pasan a No me siguen', () => {
+test('8. unavailable en snapshot cuenta en total actual de no me siguen', () => {
   const snapshot = {
     followers: ['u1'],
     following: ['u1', 'bloqueo_activo']
@@ -122,7 +131,7 @@ test('8. cuentas previamente marcadas unavailable pasan a No me siguen', () => {
     bloqueo_activo: { group: 'unavailable', unavailableReason: 'possible_block' }
   };
   const categorized = categorizeNotFollowingBack(notBack, known);
-  assert.equal(categorized.notFollowingBack.includes('bloqueo_activo'), true);
+  assert.equal(categorized.unavailable.includes('bloqueo_activo'), true);
   assert.equal(notBack.length, 1);
 });
 
@@ -143,8 +152,7 @@ test('9. borrar manualmente elimina preference + memberships', () => {
 });
 
 test('10. no existe lógica swipe activa tras el cambio', () => {
-  // Verificamos que swipe fue completamente sustituido por menú contextual
-  const actions = ['move-relevant', 'move-secondary', 'delete-account'];
+  const actions = ['move-relevant', 'move-secondary', 'move-unavailable-deleted', 'delete-account'];
   assert.equal(actions.includes('delete-account'), true);
 });
 
@@ -165,19 +173,20 @@ test('12. página Cuentas sí renderiza total global', () => {
   assert.equal(totalGlobal, 3);
 });
 
-test('13. state.systemStateFilter === "notBack" selecciona categorized.notFollowingBack como baseList', () => {
+test('13. state.systemStateFilter === "unavailable" selecciona categorized.unavailable como baseList', () => {
   const categorized = {
-    notFollowingBack: ['u_normal_1', 'u_normal_2', 'u_antes_unavailable'],
+    notFollowingBack: ['u_normal_1', 'u_normal_2'],
     relevant: ['u_famoso_1'],
     secondary: ['u_secundario_1'],
-    unavailable: []
+    unavailable: ['u_eliminada_1', 'u_bloqueo_2']
   };
 
-  const systemStateFilter = 'notBack';
+  const systemStateFilter = 'unavailable';
 
   let baseList = categorized.notFollowingBack;
   if (systemStateFilter === 'relevant') baseList = categorized.relevant;
   if (systemStateFilter === 'secondary') baseList = categorized.secondary;
+  if (systemStateFilter === 'unavailable') baseList = categorized.unavailable;
 
-  assert.deepEqual(baseList, ['u_normal_1', 'u_normal_2', 'u_antes_unavailable']);
+  assert.deepEqual(baseList, ['u_eliminada_1', 'u_bloqueo_2']);
 });

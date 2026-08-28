@@ -223,9 +223,15 @@ export function classifyAccount(knownAccounts = {}, username, updates = {}) {
       nextState.famous = false;
       nextState.ignored = false;
       nextState.famousSource = null;
-      nextState.unavailableReason = updates.possibleBlock
-        ? 'possible_block'
-        : (updates.unavailableReason || (isAutoDeleted(u) ? 'deleted' : 'manual'));
+      if (updates.unavailableReason) {
+        nextState.unavailableReason = updates.unavailableReason;
+      } else if (updates.possibleBlock) {
+        nextState.unavailableReason = 'possible_block';
+      } else if (isAutoDeleted(u)) {
+        nextState.unavailableReason = 'deleted';
+      } else {
+        nextState.unavailableReason = 'unfollowed';
+      }
     } else {
       nextState.group = 'normal';
       nextState.deleted = false;
@@ -269,6 +275,7 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
   const secondary = [];
   const unavailable = [];
   const suggestions = [];
+  const seenUnavailable = new Set();
 
   for (const rawUsername of notFollowingBackList) {
     const u = normalizeUsername(rawUsername);
@@ -278,12 +285,14 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
     const autoDel = isAutoDeleted(u);
     const group = resolveAccountGroup(acc, autoDel);
 
-    if (group === 'secondary') {
+    if (group === 'unavailable') {
+      unavailable.push(rawUsername);
+      seenUnavailable.add(u);
+    } else if (group === 'secondary') {
       secondary.push(rawUsername);
     } else if (group === 'relevant') {
       relevant.push(rawUsername);
     } else {
-      // normal y cuentas antes en unavailable pasan directamente a No me siguen
       notFollowingBack.push(rawUsername);
 
       // Sugerencias automáticas
@@ -297,11 +306,24 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
     }
   }
 
+  // Preservar cuentas en knownAccounts marcadas como 'unavailable' (cuentas eliminadas, no seguidas, posibles bloqueos)
+  for (const [rawU, acc] of Object.entries(accounts)) {
+    const u = normalizeUsername(rawU);
+    if (!u || seenUnavailable.has(u)) continue;
+
+    const autoDel = isAutoDeleted(u);
+    const group = resolveAccountGroup(acc, autoDel);
+    if (group === 'unavailable') {
+      unavailable.push(rawU);
+      seenUnavailable.add(u);
+    }
+  }
+
   return {
     notFollowingBack,
     relevant,
     secondary,
-    unavailable: [],
+    unavailable,
     suggestions,
     // Alias para compatibilidad con código existente
     famous: relevant,
@@ -309,6 +331,7 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
     deleted: unavailable
   };
 }
+
 
 /**
  * Limpia automáticamente cuentas ausentes en el último snapshot (followers ∪ following).

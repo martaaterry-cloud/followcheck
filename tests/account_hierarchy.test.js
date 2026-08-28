@@ -122,22 +122,26 @@ test('6. secondary no aparece en No me siguen', () => {
   assert.equal(categorized.notFollowingBack.includes('cuenta_secundaria'), false);
 });
 
-test('7. cuentas antes en unavailable o deleted pasan a No me siguen', () => {
+test('7. unavailable no aparece en No me siguen', () => {
   let known = {
     cuenta_baja: { group: 'unavailable' }
   };
 
   const categorized = categorizeNotFollowingBack(['cuenta_baja', 'cuenta_normal'], known);
-  assert.deepEqual(categorized.notFollowingBack, ['cuenta_baja', 'cuenta_normal']);
+  assert.deepEqual(categorized.unavailable, ['cuenta_baja']);
+  assert.deepEqual(categorized.notFollowingBack, ['cuenta_normal']);
+  assert.equal(categorized.notFollowingBack.includes('cuenta_baja'), false);
 });
 
-test('8. __deleted__ se clasifica y pasa a No me siguen al no haber pestaña unavailable', () => {
+test('8. __deleted__ entra automáticamente en unavailable con reason deleted', () => {
   const username = '__deleted__999';
   assert.equal(isAutoDeleted(username), true);
 
   const categorized = categorizeNotFollowingBack([username], {});
-  assert.deepEqual(categorized.notFollowingBack, [username]);
+  assert.deepEqual(categorized.unavailable, [username]);
+  assert.equal(categorized.notFollowingBack.length, 0);
 });
+
 
 
 test('9. possible_block se guarda solo manualmente', () => {
@@ -187,7 +191,7 @@ test('12. subcategorías se contabilizan y filtran correctamente en el grupo Rel
 
 // NUEVOS TESTS UX FASE E.1
 
-test('13. cambiar activeGroup actualiza grupo entre los 3 grupos principales', () => {
+test('13. cambiar activeGroup actualiza grupo entre los 4 grupos principales', () => {
   let known = {};
   known = classifyAccount(known, 'user_a', { group: 'relevant' });
   known = classifyAccount(known, 'user_b', { group: 'secondary' });
@@ -199,7 +203,8 @@ test('13. cambiar activeGroup actualiza grupo entre los 3 grupos principales', (
 
   assert.deepEqual(categorized.relevant, ['user_a']);
   assert.deepEqual(categorized.secondary, ['user_b']);
-  assert.deepEqual(categorized.notFollowingBack, ['user_c', 'user_d']);
+  assert.deepEqual(categorized.unavailable, ['user_c']);
+  assert.deepEqual(categorized.notFollowingBack, ['user_d']);
 
   // Mover user_a de vuelta a 'normal' (No me siguen)
   known = classifyAccount(known, 'user_a', { group: 'normal' });
@@ -207,6 +212,7 @@ test('13. cambiar activeGroup actualiza grupo entre los 3 grupos principales', (
   assert.equal(reCategorized.notFollowingBack.includes('user_a'), true);
   assert.equal(reCategorized.relevant.includes('user_a'), false);
 });
+
 
 
 test('14. cuenta relevante sin membership aparece en Sin categoría', () => {

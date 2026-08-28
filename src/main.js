@@ -55,9 +55,11 @@ const state = {
   currentView: 'homeView', // 'homeView' | 'notBackView' | 'activityView' | 'settingsView'
   notBackSearch: '',
   selectedCategoryFilter: 'all', // 'all' | 'uncategorized' | categoryId
-  systemStateFilter: 'notBack', // 'notBack' | 'relevant' | 'secondary'
+  systemStateFilter: 'notBack', // 'notBack' | 'relevant' | 'secondary' | 'unavailable'
+  unavailableSubFilter: 'all', // 'all' | 'deleted' | 'unfollowed' | 'possible_block'
 
   activityFilter: 'all', // 'all' | 'unfollowed' | 'followed'
+
   activeMenuUser: null,
   activeMenuPosition: null, // { top, bottom, left, openUp }
 
@@ -661,10 +663,13 @@ function renderAccountPopover(u, group, acc) {
 
   let actionsHtml = '';
 
-  if (group === 'normal' || group === 'unavailable') {
+  if (group === 'normal') {
     actionsHtml = `
       <button class="popover-item" data-action="move-relevant" data-user="${esc(u)}">Mover a relevantes</button>
       <button class="popover-item" data-action="move-secondary" data-user="${esc(u)}">Mover a cuentas secundarias</button>
+      <button class="popover-item" data-action="move-unavailable-deleted" data-user="${esc(u)}">Marcar como cuenta eliminada</button>
+      <button class="popover-item" data-action="move-unavailable-unfollowed" data-user="${esc(u)}">Marcar como ya no la sigo</button>
+      <button class="popover-item danger" data-action="move-possible-block" data-user="${esc(u)}">Marcar como posible bloqueo</button>
       <button class="popover-item danger" data-action="delete-account" data-user="${esc(u)}">Eliminar de FollowCheck</button>
     `;
   } else if (group === 'relevant') {
@@ -675,12 +680,27 @@ function renderAccountPopover(u, group, acc) {
       ${isAuto ? `<div class="popover-reason">${esc(reasonText)}</div>` : ''}
       <button class="popover-item" data-action="move-normal" data-user="${esc(u)}">Mover a No me siguen</button>
       <button class="popover-item" data-action="move-secondary" data-user="${esc(u)}">Mover a cuentas secundarias</button>
+      <button class="popover-item" data-action="move-unavailable-deleted" data-user="${esc(u)}">Marcar como cuenta eliminada</button>
+      <button class="popover-item" data-action="move-unavailable-unfollowed" data-user="${esc(u)}">Marcar como ya no la sigo</button>
+      <button class="popover-item danger" data-action="move-possible-block" data-user="${esc(u)}">Marcar como posible bloqueo</button>
       <button class="popover-item danger" data-action="delete-account" data-user="${esc(u)}">Eliminar de FollowCheck</button>
     `;
   } else if (group === 'secondary') {
     actionsHtml = `
       <button class="popover-item" data-action="move-normal" data-user="${esc(u)}">Mover a No me siguen</button>
       <button class="popover-item" data-action="move-relevant" data-user="${esc(u)}">Mover a relevantes</button>
+      <button class="popover-item" data-action="move-unavailable-deleted" data-user="${esc(u)}">Marcar como cuenta eliminada</button>
+      <button class="popover-item" data-action="move-unavailable-unfollowed" data-user="${esc(u)}">Marcar como ya no la sigo</button>
+      <button class="popover-item danger" data-action="move-possible-block" data-user="${esc(u)}">Marcar como posible bloqueo</button>
+      <button class="popover-item danger" data-action="delete-account" data-user="${esc(u)}">Eliminar de FollowCheck</button>
+    `;
+  } else if (group === 'unavailable') {
+    actionsHtml = `
+      <button class="popover-item" data-action="move-normal" data-user="${esc(u)}">Restaurar a No me siguen</button>
+      <button class="popover-item" data-action="move-relevant" data-user="${esc(u)}">Mover a relevantes</button>
+      <button class="popover-item" data-action="move-unavailable-deleted" data-user="${esc(u)}">Cambiar a cuenta eliminada</button>
+      <button class="popover-item" data-action="move-unavailable-unfollowed" data-user="${esc(u)}">Cambiar a ya no la sigo</button>
+      <button class="popover-item danger" data-action="move-possible-block" data-user="${esc(u)}">Cambiar a posible bloqueo</button>
       <button class="popover-item danger" data-action="delete-account" data-user="${esc(u)}">Eliminar de FollowCheck</button>
     `;
   }
@@ -714,12 +734,13 @@ function renderAccountRow(u, group, acc) {
   } else if (group === 'unavailable') {
     if (acc?.unavailableReason === 'possible_block') {
       pillHtml = '<div class="pill bad-soft-pill">Posible bloqueo</div>';
-    } else if (isAutoDeleted(u)) {
-      pillHtml = '<div class="pill bad-soft-pill">Eliminada</div>';
+    } else if (acc?.unavailableReason === 'deleted' || isAutoDeleted(u)) {
+      pillHtml = '<div class="pill bad-soft-pill">Cuenta eliminada</div>';
     } else {
-      pillHtml = '<div class="pill bad-soft-pill">No disponible</div>';
+      pillHtml = '<div class="pill muted-pill">Ya no la sigo</div>';
     }
   }
+
 
   const categoryBadgesHtml = group === 'relevant' ? renderAccountCategoryBadges(u, true) : '';
 
@@ -1019,18 +1040,13 @@ function renderApp() {
   const notBackAll = calculateNotFollowingBack(snapshot);
   const categorized = categorizeNotFollowingBack(notBackAll, state.knownAccounts);
 
-  // Lista base según el estado del sistema seleccionado (3 grupos principales)
-  if (state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') {
-    state.systemStateFilter = 'notBack';
-  }
-
+  // Lista base según el estado del sistema seleccionado
   let baseList = categorized.notFollowingBack;
   if (state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') baseList = categorized.relevant;
   if (state.systemStateFilter === 'secondary' || state.systemStateFilter === 'ignored') baseList = categorized.secondary;
+  if (state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') baseList = categorized.unavailable;
 
-
-
-  // Filtrado por subcategoría SOLO si estamos en el grupo Relevantes
+  // Filtrado por subcategoría SOLO si estamos en el grupo Relevantes o subfiltros en No Disponibles
   let categoryFiltered = baseList;
   if (state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') {
     if (state.selectedCategoryFilter === 'uncategorized') {
@@ -1039,7 +1055,21 @@ function renderApp() {
       const selectedCatId = state.selectedCategoryFilter;
       categoryFiltered = baseList.filter(u => getAccountCategories(state.categoryMemberships, u).includes(selectedCatId));
     }
+  } else if (state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') {
+    if (state.unavailableSubFilter === 'deleted') {
+      categoryFiltered = baseList.filter(u => isAutoDeleted(u) || state.knownAccounts[u]?.unavailableReason === 'deleted');
+    } else if (state.unavailableSubFilter === 'unfollowed') {
+      categoryFiltered = baseList.filter(u => state.knownAccounts[u]?.unavailableReason === 'unfollowed' || state.knownAccounts[u]?.unavailableReason === 'manual' || (!state.knownAccounts[u]?.unavailableReason && !isAutoDeleted(u)));
+    } else if (state.unavailableSubFilter === 'possible_block') {
+      categoryFiltered = baseList.filter(u => state.knownAccounts[u]?.unavailableReason === 'possible_block' || state.knownAccounts[u]?.possibleBlock);
+    }
   }
+
+  // Conteos de subfiltros en No Disponibles
+  const unavDeletedCount = categorized.unavailable.filter(u => isAutoDeleted(u) || state.knownAccounts[u]?.unavailableReason === 'deleted').length;
+  const unavUnfollowedCount = categorized.unavailable.filter(u => state.knownAccounts[u]?.unavailableReason === 'unfollowed' || state.knownAccounts[u]?.unavailableReason === 'manual' || (!state.knownAccounts[u]?.unavailableReason && !isAutoDeleted(u))).length;
+  const unavPossibleBlockCount = categorized.unavailable.filter(u => state.knownAccounts[u]?.unavailableReason === 'possible_block' || state.knownAccounts[u]?.possibleBlock).length;
+
 
   // Filtrado por buscador
   const query = state.notBackSearch.toLowerCase().trim();
@@ -1174,7 +1204,7 @@ function renderApp() {
             <input id="searchNotBack" type="text" placeholder="Buscar por usuario…" value="${esc(state.notBackSearch)}" />
           </div>
 
-          <!-- Nivel 1: Selector de 3 Grupos Principales (Delegado + Directo) -->
+          <!-- Nivel 1: Selector de 4 Grupos Principales (Delegado + Directo) -->
           <div class="filter-group" id="groupTabsContainer">
             <button type="button" class="filter-btn group-tab ${state.systemStateFilter === 'notBack' ? 'active' : ''}" data-account-group="notBack">
               <span>No me siguen</span>
@@ -1188,9 +1218,11 @@ function renderApp() {
               <span>Secundarias</span>
               <span class="filter-btn-count">${categorized.secondary.length}</span>
             </button>
+            <button type="button" class="filter-btn group-tab ${(state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') ? 'active' : ''}" data-account-group="unavailable">
+              <span>No disponibles</span>
+              <span class="filter-btn-count">${categorized.unavailable.length}</span>
+            </button>
           </div>
-
-
 
           <!-- Nivel 2: Barra horizontal de Subcategorías (SOLO para Relevantes) -->
           ${state.systemStateFilter === 'relevant' ? `
@@ -1214,6 +1246,30 @@ function renderApp() {
               </div>
             </div>
           ` : ''}
+
+          <!-- Nivel 2: Subfiltros de No Disponibles (Cuenta eliminada, Ya no la sigo, Posible bloqueo) -->
+          ${(state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') ? `
+            <div class="subcategories-section">
+              <div class="subcategories-title">
+                <span>Estado / Motivo</span>
+              </div>
+              <div class="category-pills-bar">
+                <button type="button" class="category-pill ${state.unavailableSubFilter === 'all' ? 'active' : ''}" data-unav-filter="all">
+                  Todos <span class="pill-count">${categorized.unavailable.length}</span>
+                </button>
+                <button type="button" class="category-pill ${state.unavailableSubFilter === 'deleted' ? 'active' : ''}" data-unav-filter="deleted">
+                  Cuenta eliminada <span class="pill-count">${unavDeletedCount}</span>
+                </button>
+                <button type="button" class="category-pill ${state.unavailableSubFilter === 'unfollowed' ? 'active' : ''}" data-unav-filter="unfollowed">
+                  Ya no la sigo <span class="pill-count">${unavUnfollowedCount}</span>
+                </button>
+                <button type="button" class="category-pill ${state.unavailableSubFilter === 'possible_block' ? 'active' : ''}" data-unav-filter="possible_block">
+                  Posible bloqueo <span class="pill-count">${unavPossibleBlockCount}</span>
+                </button>
+              </div>
+            </div>
+          ` : ''}
+
 
 
 
@@ -1479,9 +1535,10 @@ function attachListeners() {
 
   // Helper único y centralizado para cambiar de grupo
   function setAccountGroup(group) {
-    if (!['notBack', 'relevant', 'secondary'].includes(group)) return;
+    if (!['notBack', 'relevant', 'secondary', 'unavailable'].includes(group)) return;
     state.systemStateFilter = group;
     state.selectedCategoryFilter = 'all';
+    state.unavailableSubFilter = 'all';
     state.activeMenuUser = null;
     state.activeMenuPosition = null;
     render();
@@ -1505,8 +1562,19 @@ function attachListeners() {
     });
   });
 
-
-
+  // Subfiltros de No Disponibles (Cuenta eliminada, Ya no la sigo, Posible bloqueo)
+  document.querySelectorAll('[data-unav-filter]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const targetFilter = btn.dataset.unavFilter || btn.closest('[data-unav-filter]')?.dataset.unavFilter;
+      if (targetFilter) {
+        state.unavailableSubFilter = targetFilter;
+        state.activeMenuUser = null;
+        state.activeMenuPosition = null;
+        render();
+      }
+    });
+  });
 
   // Filtros de Subcategorías (Nivel 2)
   document.querySelectorAll('[data-cat-filter]').forEach(btn => {
@@ -1521,6 +1589,7 @@ function attachListeners() {
       }
     });
   });
+
 
 
   // Botón directo "Organizar" en cada cuenta relevante
@@ -1644,17 +1713,19 @@ function attachListeners() {
       }
 
       if (action === 'move-relevant' || action === 'famous' || action === 'famous-manual') {
-
         state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'relevant', famousSource: 'manual' });
       } else if (action === 'move-secondary' || action === 'ignore') {
         state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'secondary' });
-      } else if (action === 'move-unavailable' || action === 'delete') {
-        state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'unavailable', unavailableReason: 'manual' });
+      } else if (action === 'move-unavailable-deleted') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'unavailable', unavailableReason: 'deleted' });
+      } else if (action === 'move-unavailable-unfollowed' || action === 'move-unavailable' || action === 'delete') {
+        state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'unavailable', unavailableReason: 'unfollowed' });
       } else if (action === 'move-possible-block') {
         state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'unavailable', possibleBlock: true });
       } else if (action === 'move-normal' || action === 'restore') {
         state.knownAccounts = classifyAccount(state.knownAccounts, user, { group: 'normal' });
       }
+
 
       saveLocalKnownAccounts(state.knownAccounts);
       state.activeMenuUser = null;
