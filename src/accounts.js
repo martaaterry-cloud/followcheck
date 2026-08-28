@@ -21,13 +21,13 @@ export function isAutoDeleted(username) {
 
 /**
  * Determina el grupo semántico a partir de los datos existentes.
- * 1. unavailable: deleted=true o __deleted__
+ * 1. unavailable: deleted=true o __deleted__ o unavailableReason presente
  * 2. secondary: ignored=true o group='secondary'
  * 3. relevant: famous=true o group='relevant'
  * 4. normal
  */
 export function resolveAccountGroup(acc, autoDel = false) {
-  if (autoDel || acc?.deleted || acc?.group === 'unavailable') {
+  if (autoDel || acc?.deleted || acc?.group === 'unavailable' || acc?.unavailableReason) {
     return 'unavailable';
   }
   if (acc?.group === 'secondary' || acc?.ignored) {
@@ -269,6 +269,7 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
   const secondary = [];
   const unavailable = [];
   const suggestions = [];
+  const seenUnavailable = new Set();
 
   for (const rawUsername of notFollowingBackList) {
     const u = normalizeUsername(rawUsername);
@@ -280,6 +281,7 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
 
     if (group === 'unavailable') {
       unavailable.push(rawUsername);
+      seenUnavailable.add(u);
     } else if (group === 'secondary') {
       secondary.push(rawUsername);
     } else if (group === 'relevant') {
@@ -298,6 +300,20 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
     }
   }
 
+  // Incluir también cuentas en knownAccounts marcadas como 'unavailable' o con unavailableReason
+  // que ya no estén presentes en notFollowingBackList (ej. cuentas borradas o bloqueos preservados)
+  for (const [rawU, acc] of Object.entries(accounts)) {
+    const u = normalizeUsername(rawU);
+    if (!u || seenUnavailable.has(u)) continue;
+
+    const autoDel = isAutoDeleted(u);
+    const group = resolveAccountGroup(acc, autoDel);
+    if (group === 'unavailable') {
+      unavailable.push(rawU);
+      seenUnavailable.add(u);
+    }
+  }
+
   return {
     notFollowingBack,
     relevant,
@@ -308,5 +324,64 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
     famous: relevant,
     ignored: secondary,
     deleted: unavailable
+  };
+}
+
+/**
+ * Limpia automáticamente cuentas ausentes en el último snapshot (followers ∪ following).
+ * Conserva únicamente cuentas en 'unavailable' o con unavailableReason / __deleted__*.
+ * Devuelve knownAccounts y categoryMemberships limpios junto con los usernames podados.
+ */
+export function pruneAbsentAccounts({
+  followers = [],
+  following = [],
+  knownAccounts = {},
+  categoryMemberships = {}
+} = {}) {
+  const presentNow = new Set([
+    ...(followers || []).map(normalizeUsername),
+    ...(following || []).map(normalizeUsername)
+  ]);
+
+  const cleanedKnown = {};
+  const cleanedMemberships = { ...(categoryMemberships || {}) };
+  const prunedUsernames = [];
+
+  const KEEP_REASONS = new Set(['possible_block', 'deleted', 'unavailable', 'manual']);
+
+  for (const [rawUser, acc] of Object.entries(knownAccounts || {})) {
+    const u = normalizeUsername(rawUser);
+    if (!u) continue;
+
+    const isPresent = presentNow.has(u);
+
+    if (isPresent) {
+      cleanedKnown[u] = acc;
+    } else {
+      // Cuenta ausente en snapshot actual
+      const autoDel = isAutoDeleted(u);
+      const group = resolveAccountGroup(acc, autoDel);
+      const hasPreserveReason = acc?.unavailableReason && KEEP_REASONS.has(acc.unavailableReason);
+
+      if (group === 'unavailable' || hasPreserveReason || autoDel) {
+        // Se conserva en 'unavailable'
+        cleanedKnown[u] = {
+          ...acc,
+          group: 'unavailable',
+          deleted: true,
+          unavailableReason: acc.unavailableReason || (autoDel ? 'deleted' : 'manual')
+        };
+      } else {
+        // Se poda de knownAccounts y de memberships
+        prunedUsernames.push(u);
+        delete cleanedMemberships[u];
+      }
+    }
+  }
+
+  return {
+    knownAccounts: cleanedKnown,
+    categoryMemberships: cleanedMemberships,
+    prunedUsernames
   };
 }

@@ -334,8 +334,43 @@ export async function saveRemoteAccountCategories(userId, username, categoryIds 
 
       if (error) throw error;
     }
+
   } catch (err) {
     console.warn('Error al guardar account category memberships remotas:', err);
   }
 }
+
+export async function deleteRemotePreferences(userId, usernames = []) {
+
+  if (!AUTH_ENABLED || !supabaseReady() || !userId || !usernames.length) return;
+  try {
+    const normList = usernames.map(u => String(u).toLowerCase().trim()).filter(Boolean);
+    const { error } = await supabase
+      .from('account_preferences')
+      .delete()
+      .eq('user_id', userId)
+      .in('username', normList);
+
+    if (error) throw error;
+  } catch (err) {
+    console.warn('Error al eliminar account_preferences remotas:', err);
+  }
+}
+
+export async function deleteRemoteCategoryMemberships(userId, usernames = []) {
+  if (!AUTH_ENABLED || !supabaseReady() || !userId || !usernames.length) return;
+  try {
+    const normList = usernames.map(u => String(u).toLowerCase().trim()).filter(Boolean);
+    const { error } = await supabase
+      .from('account_category_memberships')
+      .delete()
+      .eq('user_id', userId)
+      .in('username', normList);
+
+    if (error) throw error;
+  } catch (err) {
+    console.warn('Error al eliminar category memberships remotas:', err);
+  }
+}
+
 

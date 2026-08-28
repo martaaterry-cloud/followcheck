@@ -6,9 +6,11 @@ import {
   getLatestSnapshot, saveSnapshot,
   getActivity, appendActivity,
   getRemotePreferences, upsertRemotePreferences, upsertSingleRemotePreference,
+  deleteRemotePreferences,
   getRemoteProfile, saveRemoteProfile,
   getRemoteCategories, saveRemoteCategories, deleteRemoteCategory,
-  getRemoteCategoryMemberships, saveRemoteAccountCategories
+  getRemoteCategoryMemberships, saveRemoteAccountCategories,
+  deleteRemoteCategoryMemberships
 } from './repository.js';
 import {
   getAuthUser, getAuthSession, loginWithPassword, registerWithPassword, resetPassword, updateUserPassword,
@@ -24,6 +26,7 @@ import {
 } from './storage.js';
 import {
   syncKnownAccounts, classifyAccount, categorizeNotFollowingBack,
+  pruneAbsentAccounts, normalizeUsername,
   instagramProfileUrl
 } from './accounts.js';
 import {
@@ -52,7 +55,7 @@ const state = {
   currentView: 'homeView', // 'homeView' | 'notBackView' | 'activityView' | 'settingsView'
   notBackSearch: '',
   selectedCategoryFilter: 'all', // 'all' | 'uncategorized' | categoryId
-  systemStateFilter: 'notBack', // 'notBack' | 'famous' | 'ignored' | 'deleted'
+  systemStateFilter: 'notBack', // 'notBack' | 'relevant' | 'secondary' | 'unavailable'
   activityFilter: 'all', // 'all' | 'unfollowed' | 'followed'
   activeMenuUser: null,
   activeMenuPosition: null, // { top, bottom, left, openUp }
@@ -64,6 +67,9 @@ const state = {
   newCategoryNameInput: '',
   editingCategoryId: null,
   editingCategoryNameInput: '',
+  isDeleteModalOpen: false,
+  deleteTargetUser: null,
+
 
   pwaStatusText: 'Estás usando la última versión.',
   pwaUpdateAvailable: false,
@@ -726,25 +732,31 @@ function renderAccountRow(u, group, acc) {
   const categoryBadgesHtml = group === 'relevant' ? renderAccountCategoryBadges(u, true) : '';
 
   return `
-    <div class="account-row">
-      <div class="account-link grow" style="cursor: default;">
-        <div class="avatar">${esc(initials(u))}</div>
-        <div class="grow" style="min-width: 0;">
-          <div class="name">${renderUsername(u)}</div>
-          <div class="sub">${group === 'relevant' && acc?.famousSource === 'auto' ? esc(acc?.autoFamousReason || 'Cuenta relevante') : 'Cuenta analizada'}</div>
-          ${categoryBadgesHtml}
+    <div class="account-row-wrapper" data-account-wrapper="${esc(u)}">
+      <div class="account-swipe-bg">
+        <button class="account-swipe-btn" data-swipe-delete-user="${esc(u)}">Eliminar</button>
+      </div>
+      <div class="account-row" data-account-swipe-row="${esc(u)}">
+        <div class="account-link grow" style="cursor: default;">
+          <div class="avatar">${esc(initials(u))}</div>
+          <div class="grow" style="min-width: 0;">
+            <div class="name">${renderUsername(u)}</div>
+            <div class="sub">${group === 'relevant' && acc?.famousSource === 'auto' ? esc(acc?.autoFamousReason || 'Cuenta relevante') : 'Cuenta analizada'}</div>
+            ${categoryBadgesHtml}
+          </div>
         </div>
+        <div class="account-actions">
+          ${group === 'relevant' ? `
+            <button class="btn-organize" data-organize-user="${esc(u)}" title="Organizar subcategorías">Organizar</button>
+          ` : pillHtml}
+          <button class="menu-btn ${isMenuOpen ? 'active' : ''}" data-menu-user="${esc(u)}" title="Opciones" aria-label="Opciones de cuenta">⋯</button>
+        </div>
+        ${isMenuOpen ? renderAccountPopover(u, group, acc) : ''}
       </div>
-      <div class="account-actions">
-        ${group === 'relevant' ? `
-          <button class="btn-organize" data-organize-user="${esc(u)}" title="Organizar subcategorías">Organizar</button>
-        ` : pillHtml}
-        <button class="menu-btn ${isMenuOpen ? 'active' : ''}" data-menu-user="${esc(u)}" title="Opciones" aria-label="Opciones de cuenta">⋯</button>
-      </div>
-      ${isMenuOpen ? renderAccountPopover(u, group, acc) : ''}
     </div>
   `;
 }
+
 
 function renderOrganizeModal() {
   if (!state.isOrganizeModalOpen || !state.organizeTargetUser) return '';
@@ -862,7 +874,34 @@ function renderManageCategoriesModal() {
   `;
 }
 
+function renderDeleteConfirmModal() {
+  if (!state.isDeleteModalOpen || !state.deleteTargetUser) return '';
+  const u = state.deleteTargetUser;
+
+  return `
+    <div class="modal-backdrop" id="deleteModalBackdrop">
+      <div class="modal-sheet">
+        <div class="modal-header">
+          <h3 class="modal-title">Eliminar cuenta</h3>
+          <button class="modal-close" id="btnCloseDeleteModal" title="Cerrar">${icons.close}</button>
+        </div>
+        <p style="font-size: 14px; font-weight: 600; margin: 10px 0 6px;">
+          ¿Eliminar @${esc(u)} de FollowCheck?
+        </p>
+        <p class="sub" style="line-height: 1.4; margin-bottom: 20px;">
+          Esta cuenta se eliminará de tus listas y clasificaciones locales. Solo se elimina de FollowCheck, no afecta a tu cuenta de Instagram.
+        </p>
+        <div style="display: flex; gap: 10px;">
+          <button id="btnCancelDelete" class="secondary" style="flex: 1;">Cancelar</button>
+          <button id="btnConfirmDelete" class="primary" style="flex: 1; background: #eb4d4b; border-color: #eb4d4b;">Eliminar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function renderUpdateModal() {
+
   if (!state.isUpdateModalOpen) return '';
 
   const step = state.updateModalStep;
@@ -1121,7 +1160,6 @@ function renderApp() {
                 <div class="grow" style="min-width: 0;">
                   <div class="name">${renderUsername(e.username)}</div>
                   <div class="sub">${e.type === 'unfollowed' ? 'Te dejó de seguir' : 'Empezó a seguirte'}</div>
-                  ${renderAccountCategoryBadges(e.username)}
                 </div>
                 <div class="pill ${e.type === 'unfollowed' ? 'bad' : 'good'}">${formatDate(e.createdAt)}</div>
               </div>
@@ -1129,6 +1167,7 @@ function renderApp() {
           </div>
         </div>
       </section>
+
 
       <!-- VISTA 2: NO ME SIGUEN (4 GRUPOS PRINCIPALES + SUBCATEGORÍAS EN RELEVANTES) -->
       <section id="notBackView" class="${state.currentView === 'notBackView' ? '' : 'hidden'}">
@@ -1260,7 +1299,6 @@ function renderApp() {
                 <div class="grow" style="min-width: 0;">
                   <div class="name">${renderUsername(e.username)}</div>
                   <div class="sub">${e.type === 'unfollowed' ? 'Te dejó de seguir' : 'Empezó a seguirte'}</div>
-                  ${renderAccountCategoryBadges(e.username)}
                 </div>
                 <div class="pill ${e.type === 'unfollowed' ? 'bad' : 'good'}">${formatDate(e.createdAt)}</div>
               </div>
@@ -1402,6 +1440,8 @@ function renderApp() {
       ${renderMigrationModal()}
       ${renderOrganizeModal()}
       ${renderManageCategoriesModal()}
+      ${renderDeleteConfirmModal()}
+
 
       <!-- NAVEGACIÓN INFERIOR -->
       <nav>
@@ -1797,7 +1837,106 @@ function attachListeners() {
     });
   });
 
+  // Swipe to Delete en filas de cuenta
+  let touchStartX = 0;
+  let touchCurrentX = 0;
+  let activeSwipeRow = null;
+
+  document.querySelectorAll('[data-account-swipe-row]').forEach(row => {
+    row.addEventListener('touchstart', (e) => {
+      touchStartX = e.touches[0].clientX;
+      touchCurrentX = touchStartX;
+      activeSwipeRow = row;
+      row.style.transition = 'none';
+    }, { passive: true });
+
+    row.addEventListener('touchmove', (e) => {
+      if (activeSwipeRow !== row) return;
+      touchCurrentX = e.touches[0].clientX;
+      const diffX = touchCurrentX - touchStartX;
+      if (diffX < 0 && diffX > -120) {
+        row.style.transform = `translateX(${diffX}px)`;
+      } else if (diffX >= 0) {
+        row.style.transform = 'translateX(0px)';
+      }
+    }, { passive: true });
+
+    row.addEventListener('touchend', () => {
+      if (activeSwipeRow !== row) return;
+      row.style.transition = 'transform 0.2s cubic-bezier(0.16, 1, 0.3, 1)';
+      const diffX = touchCurrentX - touchStartX;
+      if (diffX < -60) {
+        row.classList.add('swiped');
+        row.style.transform = 'translateX(-80px)';
+      } else {
+        row.classList.remove('swiped');
+        row.style.transform = 'translateX(0px)';
+      }
+      activeSwipeRow = null;
+    });
+  });
+
+  // Botón "Eliminar" revelado por el swipe
+  document.querySelectorAll('[data-swipe-delete-user]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const user = btn.dataset.swipeDeleteUser;
+      if (user) {
+        state.deleteTargetUser = user;
+        state.isDeleteModalOpen = true;
+        render();
+      }
+    });
+  });
+
+  // Modal Confirmación Eliminar Cuenta
+  const btnCloseDeleteModal = document.querySelector('#btnCloseDeleteModal');
+  const btnCancelDelete = document.querySelector('#btnCancelDelete');
+  const btnConfirmDelete = document.querySelector('#btnConfirmDelete');
+  const deleteModalBackdrop = document.querySelector('#deleteModalBackdrop');
+
+  const closeDeleteModal = () => {
+    state.isDeleteModalOpen = false;
+    state.deleteTargetUser = null;
+    render();
+  };
+
+  if (btnCloseDeleteModal) btnCloseDeleteModal.addEventListener('click', closeDeleteModal);
+  if (btnCancelDelete) btnCancelDelete.addEventListener('click', closeDeleteModal);
+  if (deleteModalBackdrop) {
+    deleteModalBackdrop.addEventListener('click', (e) => {
+      if (e.target === deleteModalBackdrop) closeDeleteModal();
+    });
+  }
+
+  if (btnConfirmDelete) {
+    btnConfirmDelete.addEventListener('click', async () => {
+      const user = state.deleteTargetUser;
+      if (!user) return;
+
+      const norm = normalizeUsername(user);
+      if (state.knownAccounts[norm]) {
+        delete state.knownAccounts[norm];
+        saveLocalKnownAccounts(state.knownAccounts);
+      }
+      if (state.categoryMemberships[norm]) {
+        delete state.categoryMemberships[norm];
+        saveLocalCategoryMemberships(state.categoryMemberships);
+      }
+
+      if (AUTH_ENABLED && state.user) {
+        await deleteRemotePreferences(state.user.id, [norm]);
+        await deleteRemoteCategoryMemberships(state.user.id, [norm]);
+      }
+
+      state.isDeleteModalOpen = false;
+      state.deleteTargetUser = null;
+      render();
+    });
+  }
+
   // Guardar Perfil en Ajustes
+
   const profileForm = document.querySelector('#profileForm');
   if (profileForm) {
     profileForm.addEventListener('submit', async (e) => {
@@ -1999,16 +2138,39 @@ function attachListeners() {
         }
 
         state.knownAccounts = syncKnownAccounts(state.knownAccounts, current);
+
+        // Limpieza automática de cuentas ausentes en el nuevo snapshot
+        const {
+          knownAccounts: cleanedKnown,
+          categoryMemberships: cleanedMemberships,
+          prunedUsernames
+        } = pruneAbsentAccounts({
+          followers: current.followers,
+          following: current.following,
+          knownAccounts: state.knownAccounts,
+          categoryMemberships: state.categoryMemberships
+        });
+
+        state.knownAccounts = cleanedKnown;
+        state.categoryMemberships = cleanedMemberships;
+
         saveLocalKnownAccounts(state.knownAccounts);
+        saveLocalCategoryMemberships(state.categoryMemberships);
 
         if (AUTH_ENABLED && state.user) {
           const rows = Object.entries(state.knownAccounts).map(([u, acc]) =>
             knownAccountToPreferenceRow(state.user.id, u, acc)
           );
           upsertRemotePreferences(state.user.id, rows);
+
+          if (prunedUsernames.length > 0) {
+            await deleteRemotePreferences(state.user.id, prunedUsernames);
+            await deleteRemoteCategoryMemberships(state.user.id, prunedUsernames);
+          }
         }
 
         recordSuccessfulImport();
+
         state.exportState = loadExportState();
 
         state.snapshot = savedSnapshot;
