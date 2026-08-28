@@ -40,10 +40,11 @@ import {
 import { initPwa, checkPwaUpdate, applyPwaUpdate, reloadApp } from './pwa.js';
 import { loadExportState, recordExportRequested, recordSuccessfulImport, isExportPending } from './exportState.js';
 import {
-  reconcilePreferences, deduplicateActivity,
+  reconcilePreferences, reconcileCategoriesAndMemberships, deduplicateActivity,
   hasPendingLocalDataToMigrate, isLocalDataMigrated, markLocalDataMigrated, dismissMigrationPrompt,
   knownAccountToPreferenceRow
 } from './sync.js';
+
 
 const state = {
   user: null,
@@ -571,77 +572,55 @@ async function syncWithCloud(silent = false) {
       errors.push(`Actividad: ${err.message}`);
     }
 
-    // 3. Sincronizar Categorías
+    // 3. Sincronizar Categorías y Memberships
     let remoteCats = [];
-    try {
-      remoteCats = await getRemoteCategories(userId);
-      const localCats = state.categories || [];
-
-      if (remoteCats && remoteCats.length > 0) {
-        const remoteNameMap = new Map(remoteCats.map(c => [c.name.toLowerCase().trim(), c]));
-        const pendingUploadCats = [];
-
-        for (const loc of localCats) {
-          const match = remoteNameMap.get(loc.name.toLowerCase().trim());
-          if (!match) {
-            pendingUploadCats.push(loc);
-          }
-        }
-
-        if (pendingUploadCats.length > 0) {
-          await saveRemoteCategories(userId, pendingUploadCats);
-          remoteCats = await getRemoteCategories(userId);
-        }
-
-        state.categories = remoteCats;
-        saveLocalCategories(remoteCats);
-      } else if (localCats && localCats.length > 0) {
-        await saveRemoteCategories(userId, localCats);
-        state.categories = localCats;
-        saveLocalCategories(localCats);
-      }
-    } catch (err) {
-      console.warn('[sync] categories error:', err);
-      errors.push(`Categorías: ${err.message}`);
-    }
-
-    // 4. Sincronizar Memberships
     let remoteMemberships = {};
     try {
+      remoteCats = await getRemoteCategories(userId);
       remoteMemberships = await getRemoteCategoryMemberships(userId);
-      const localMemberships = state.categoryMemberships || {};
 
-      const mergedMemberships = { ...remoteMemberships };
-      const pendingUploadMemberships = [];
+      console.log('[debug] remoteCats', remoteCats);
+      console.log('[debug] remoteMemberships', remoteMemberships);
 
-      for (const [user, catIds] of Object.entries(localMemberships)) {
-        if (!mergedMemberships[user]) {
-          mergedMemberships[user] = [...catIds];
-          pendingUploadMemberships.push({ user, catIds });
-        } else {
-          const set = new Set([...mergedMemberships[user], ...catIds]);
-          mergedMemberships[user] = Array.from(set);
-          if (mergedMemberships[user].length > (remoteMemberships[user]?.length || 0)) {
-            pendingUploadMemberships.push({ user, catIds: mergedMemberships[user] });
-          }
-        }
+      const reconciled = reconcileCategoriesAndMemberships({
+        localCategories: state.categories || [],
+        remoteCategories: remoteCats,
+        localMemberships: state.categoryMemberships || {},
+        remoteMemberships,
+        userId
+      });
+
+      if (!reconciled.isValid) {
+        errors.push('Hay asignaciones de categorías inconsistentes.');
       }
 
-      for (const item of pendingUploadMemberships) {
+      if (reconciled.pendingPushCategories.length > 0) {
+        await saveRemoteCategories(userId, reconciled.pendingPushCategories);
+        state.categories = await getRemoteCategories(userId);
+      } else {
+        state.categories = reconciled.categories;
+      }
+      saveLocalCategories(state.categories);
+
+      for (const item of reconciled.pendingPushMemberships) {
         await saveRemoteAccountCategories(userId, item.user, item.catIds);
       }
+      state.categoryMemberships = reconciled.categoryMemberships;
+      saveLocalCategoryMemberships(state.categoryMemberships);
 
-      state.categoryMemberships = mergedMemberships;
-      saveLocalCategoryMemberships(mergedMemberships);
+      console.log('[debug] categories merged', state.categories);
+      console.log('[debug] memberships merged', state.categoryMemberships);
     } catch (err) {
-      console.warn('[sync] memberships error:', err);
-      errors.push(`Asignaciones: ${err.message}`);
+      console.warn('[sync] categories & memberships error:', err);
+      errors.push(`Categorías/Asignaciones: ${err.message}`);
     }
 
-    // 5. Sincronizar Account Preferences (knownAccounts)
+    // 4. Sincronizar Account Preferences (knownAccounts)
     let remotePrefs = [];
     try {
       remotePrefs = await getRemotePreferences(userId);
+      console.log('[debug] remotePrefs', remotePrefs);
+
       const { mergedKnownAccounts, pendingPushRows } = reconcilePreferences(state.knownAccounts, remotePrefs, userId);
 
       state.knownAccounts = mergedKnownAccounts;
@@ -650,10 +629,13 @@ async function syncWithCloud(silent = false) {
       if (pendingPushRows.length > 0) {
         await upsertRemotePreferences(userId, pendingPushRows);
       }
+
+      console.log('[debug] knownAccounts merged', state.knownAccounts);
     } catch (err) {
       console.warn('[sync] preferences error:', err);
       errors.push(`Preferencias: ${err.message}`);
     }
+
 
     // 6. Sincronizar Perfil de Usuario
     let remoteProf = null;

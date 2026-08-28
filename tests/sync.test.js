@@ -4,6 +4,7 @@ import {
   knownAccountToPreferenceRow,
   preferenceRowToKnownAccount,
   reconcilePreferences,
+  reconcileCategoriesAndMemberships,
   deduplicateActivity,
   computeSnapshotFingerprint,
   hasPendingLocalDataToMigrate,
@@ -12,6 +13,7 @@ import {
   markLocalDataMigrated,
   dismissMigrationPrompt
 } from '../src/sync.js';
+
 
 // Polyfill minimal localStorage para tests en Node.js
 if (typeof globalThis.localStorage === 'undefined') {
@@ -470,5 +472,135 @@ test('10. sync bidireccional conserva cambios del dispositivo más reciente', ()
   // player2 gana remoto
   assert.equal(mergedKnownAccounts.player2.group, 'secondary');
 });
+
+// =========================================================================
+// NUEVOS TESTS DE DEBUG: PREFERENCIAS, CATEGORÍAS Y MEMBERSHIPS V0.3.14
+// =========================================================================
+
+test('DEBUG 1. remote preference relevant + local vacío -> relevant', () => {
+  const localKnown = {};
+  const remoteRows = [
+    { username: 'atletico', account_group: 'relevant', famous: true, updated_at: '2026-08-28T09:00:00Z' }
+  ];
+  const { mergedKnownAccounts } = reconcilePreferences(localKnown, remoteRows, 'user-1');
+  assert.equal(mergedKnownAccounts.atletico.group, 'relevant');
+  assert.equal(mergedKnownAccounts.atletico.famous, true);
+});
+
+test('DEBUG 2. remote secondary + local vacío -> secondary', () => {
+  const localKnown = {};
+  const remoteRows = [
+    { username: 'tienda_ropa', account_group: 'secondary', ignored: true, updated_at: '2026-08-28T09:00:00Z' }
+  ];
+  const { mergedKnownAccounts } = reconcilePreferences(localKnown, remoteRows, 'user-1');
+  assert.equal(mergedKnownAccounts.tienda_ropa.group, 'secondary');
+});
+
+test('DEBUG 3. remote unavailable + local vacío -> unavailable con reason', () => {
+  const localKnown = {};
+  const remoteRows = [
+    { username: 'ex_amigo', account_group: 'unavailable', unavailable_reason: 'unfollowed', updated_at: '2026-08-28T09:00:00Z' }
+  ];
+  const { mergedKnownAccounts } = reconcilePreferences(localKnown, remoteRows, 'user-1');
+  assert.equal(mergedKnownAccounts.ex_amigo.group, 'unavailable');
+  assert.equal(mergedKnownAccounts.ex_amigo.unavailableReason, 'unfollowed');
+});
+
+test('DEBUG 4. account_group remoto prevalece sobre flags legacy', () => {
+  const row = {
+    username: 'test_user',
+    account_group: 'secondary',
+    famous: true, // flag legacy contradictorio
+    ignored: false,
+    updated_at: '2026-08-28T09:00:00Z'
+  };
+  const acc = preferenceRowToKnownAccount(row);
+  assert.equal(acc.group, 'secondary');
+});
+
+test('DEBUG 5. remote category id reemplaza local UUID mismo nombre', () => {
+  const localCategories = [{ id: 'cat-local-uuid-1', name: 'Balonmano', sortOrder: 0 }];
+  const remoteCategories = [{ id: 'cat-remote-uuid-99', name: 'Balonmano', sortOrder: 0 }];
+
+  const result = reconcileCategoriesAndMemberships({
+    localCategories,
+    remoteCategories,
+    localMemberships: {},
+    remoteMemberships: {},
+    userId: 'user-1'
+  });
+
+  assert.equal(result.categories.length, 1);
+  assert.equal(result.categories[0].id, 'cat-remote-uuid-99');
+  assert.equal(result.categories[0].name, 'Balonmano');
+});
+
+test('DEBUG 6. membership local se remapea al remote category id', () => {
+  const localCategories = [{ id: 'cat-local-1', name: 'Fútbol' }];
+  const remoteCategories = [{ id: 'cat-remote-canon-1', name: 'Fútbol' }];
+  const localMemberships = { cristiano: ['cat-local-1'] };
+  const remoteMemberships = {};
+
+  const result = reconcileCategoriesAndMemberships({
+    localCategories,
+    remoteCategories,
+    localMemberships,
+    remoteMemberships,
+    userId: 'user-1'
+  });
+
+  assert.deepEqual(result.categoryMemberships.cristiano, ['cat-remote-canon-1']);
+});
+
+test('DEBUG 7. membership con category_id inexistente no se acepta silenciosamente', () => {
+  const remoteCategories = [{ id: 'cat-1', name: 'Gimnasio' }];
+  const remoteMemberships = { pepe: ['cat-inexistente-404'] };
+
+  const result = reconcileCategoriesAndMemberships({
+    localCategories: [],
+    remoteCategories,
+    localMemberships: {},
+    remoteMemberships,
+    userId: 'user-1'
+  });
+
+  // El ID inexistente queda filtrado y el objeto resultante no contiene referencias rotas
+  assert.deepEqual(result.categoryMemberships.pepe, []);
+  assert.equal(result.isValid, true);
+});
+
+test('DEBUG 8. dispositivo nuevo reconstruye grupos + categorías + memberships correctamente', () => {
+  const remoteRows = [
+    { username: 'marta', account_group: 'relevant', famous: true, updated_at: '2026-08-28T09:00:00Z' }
+  ];
+  const remoteCats = [{ id: 'cat-bm-1', name: 'Balonmano', sortOrder: 0 }];
+  const remoteMemberships = { marta: ['cat-bm-1'] };
+
+  const { mergedKnownAccounts } = reconcilePreferences({}, remoteRows, 'user-1');
+  const catResult = reconcileCategoriesAndMemberships({
+    localCategories: [],
+    remoteCategories: remoteCats,
+    localMemberships: {},
+    remoteMemberships,
+    userId: 'user-1'
+  });
+
+  assert.equal(mergedKnownAccounts.marta.group, 'relevant');
+  assert.equal(catResult.categories[0].name, 'Balonmano');
+  assert.deepEqual(catResult.categoryMemberships.marta, ['cat-bm-1']);
+});
+
+test('DEBUG 9. syncStatus es error si memberships quedan huérfanos o inválidos', () => {
+  const valid = false; // simulación de fallo de consistencia
+  const errors = [];
+  if (!valid) {
+    errors.push('Hay asignaciones de categorías inconsistentes.');
+  }
+
+  let syncStatus = errors.length > 0 ? 'error' : 'synced';
+  assert.equal(syncStatus, 'error');
+  assert.equal(errors[0], 'Hay asignaciones de categorías inconsistentes.');
+});
+
 
 

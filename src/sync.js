@@ -144,7 +144,18 @@ export function knownAccountToPreferenceRow(userId, username, acc) {
 
 export function preferenceRowToKnownAccount(row) {
   const now = new Date().toISOString();
-  const group = row.account_group || (row.deleted ? 'unavailable' : (row.ignored ? 'secondary' : (row.famous ? 'relevant' : 'normal')));
+  // Regla: si account_group existe en remoto, tiene prioridad absoluta sobre cualquier flag legacy
+  let group = 'normal';
+  if (row.account_group) {
+    group = row.account_group;
+  } else if (row.deleted) {
+    group = 'unavailable';
+  } else if (row.ignored) {
+    group = 'secondary';
+  } else if (row.famous) {
+    group = 'relevant';
+  }
+
   const unavailableReason = row.unavailable_reason || (group === 'unavailable' ? 'manual' : null);
 
   return {
@@ -152,9 +163,10 @@ export function preferenceRowToKnownAccount(row) {
     unavailableReason,
     status: row.status || 'normal',
     famous: group === 'relevant' || Boolean(row.famous),
-    famousSource: row.famous_source || null,
+    famousSource: group === 'relevant' ? (row.famous_source || 'manual') : null,
     ignored: group === 'secondary' || Boolean(row.ignored),
     deleted: group === 'unavailable' || Boolean(row.deleted),
+
     autoFamousConfidence: Number(row.auto_famous_confidence || 0),
     autoFamousReason: row.auto_famous_reason || '',
     autoFamousCheckedAt: row.auto_famous_checked_at || null,
@@ -165,8 +177,6 @@ export function preferenceRowToKnownAccount(row) {
     updatedAt: row.updated_at || now
   };
 }
-
-
 
 export function reconcilePreferences(localKnownAccounts = {}, remoteRows = [], userId = null) {
   const merged = { ...localKnownAccounts };
@@ -183,14 +193,15 @@ export function reconcilePreferences(localKnownAccounts = {}, remoteRows = [], u
     const remoteRow = remoteMap.get(normUser);
 
     if (!remoteRow) {
-      if (userId) {
+      if (userId && (localAcc.updatedAt || localAcc.group !== 'normal' || localAcc.famous || localAcc.ignored || localAcc.deleted)) {
         pendingPushRows.push(knownAccountToPreferenceRow(userId, normUser, localAcc));
       }
     } else {
-      const localTime = new Date(localAcc.updatedAt || localAcc.lastSeen || 0).getTime();
-      const remoteTime = new Date(remoteRow.updated_at || 0).getTime();
+      // Regla: Solo si localAcc tiene updatedAt explícito y es estrictamente mayor que remote gana local
+      const localTime = localAcc.updatedAt ? new Date(localAcc.updatedAt).getTime() : 0;
+      const remoteTime = remoteRow.updated_at ? new Date(remoteRow.updated_at).getTime() : 0;
 
-      if (remoteTime > localTime) {
+      if (remoteTime >= localTime || localTime === 0) {
         merged[normUser] = preferenceRowToKnownAccount(remoteRow);
       } else if (localTime > remoteTime && userId) {
         pendingPushRows.push(knownAccountToPreferenceRow(userId, normUser, localAcc));
@@ -200,7 +211,7 @@ export function reconcilePreferences(localKnownAccounts = {}, remoteRows = [], u
 
   // 2. Procesar cuentas que solo existen en remoto
   for (const [normUser, remoteRow] of remoteMap.entries()) {
-    if (!merged[normUser]) {
+    if (!merged[normUser] || !localKnownAccounts[normUser]) {
       merged[normUser] = preferenceRowToKnownAccount(remoteRow);
     }
   }
@@ -211,12 +222,98 @@ export function reconcilePreferences(localKnownAccounts = {}, remoteRows = [], u
   };
 }
 
+export function reconcileCategoriesAndMemberships({
+  localCategories = [],
+  remoteCategories = [],
+  localMemberships = {},
+  remoteMemberships = {},
+  userId = null
+}) {
+  // 1. Reconciliar Categorías: Las remotas son la fuente canónica de verdad
+  const canonicalCats = [];
+  const oldIdToCanonicalId = new Map();
+  const seenNames = new Map();
+
+  // Primero poblar con remotas
+  for (const rc of remoteCategories || []) {
+    const normName = rc.name.toLowerCase().trim();
+    if (!seenNames.has(normName)) {
+      canonicalCats.push(rc);
+      seenNames.set(normName, rc.id);
+      oldIdToCanonicalId.set(rc.id, rc.id);
+    }
+  }
+
+  // Luego procesar locales: si existe una por nombre, mapear el ID local al ID canónico remoto
+  const pendingPushCategories = [];
+  for (const lc of localCategories || []) {
+    const normName = lc.name.toLowerCase().trim();
+    if (seenNames.has(normName)) {
+      const canonicalId = seenNames.get(normName);
+      oldIdToCanonicalId.set(lc.id, canonicalId);
+    } else {
+      canonicalCats.push(lc);
+      seenNames.set(normName, lc.id);
+      oldIdToCanonicalId.set(lc.id, lc.id);
+      if (userId) {
+        pendingPushCategories.push(lc);
+      }
+    }
+  }
+
+  // 2. Conjunto de IDs válidos
+  const validCategoryIds = new Set(canonicalCats.map(c => c.id));
+
+  // 3. Reconciliar Memberships
+  const mergedMemberships = {};
+  const pendingPushMemberships = [];
+
+  // Mapear remotas
+  for (const [rawUser, catIds] of Object.entries(remoteMemberships || {})) {
+    const u = rawUser.toLowerCase().trim();
+    const validIds = (catIds || []).filter(id => validCategoryIds.has(id));
+    mergedMemberships[u] = Array.from(new Set(validIds));
+  }
+
+  // Integrar locales remapeando IDs viejos a IDs canónicos
+  for (const [rawUser, catIds] of Object.entries(localMemberships || {})) {
+    const u = rawUser.toLowerCase().trim();
+    const remappedLocalIds = (catIds || [])
+      .map(id => oldIdToCanonicalId.get(id) || id)
+      .filter(id => validCategoryIds.has(id));
+
+    if (!mergedMemberships[u]) {
+      if (remappedLocalIds.length > 0) {
+        mergedMemberships[u] = Array.from(new Set(remappedLocalIds));
+        if (userId) {
+          pendingPushMemberships.push({ user: u, catIds: mergedMemberships[u] });
+        }
+      }
+    } else {
+      const combined = Array.from(new Set([...mergedMemberships[u], ...remappedLocalIds]));
+      if (combined.length > mergedMemberships[u].length && userId) {
+        pendingPushMemberships.push({ user: u, catIds: combined });
+      }
+      mergedMemberships[u] = combined;
+    }
+  }
+
+  const isValid = Object.values(mergedMemberships).every(ids => ids.every(id => validCategoryIds.has(id)));
+
+  return {
+    categories: canonicalCats,
+    categoryMemberships: mergedMemberships,
+    pendingPushCategories,
+    pendingPushMemberships,
+    isValid
+  };
+}
+
 export function deduplicateActivity(localActivity = [], remoteActivity = []) {
   const seen = new Set();
   const combined = [];
 
   const all = [...(localActivity || []), ...(remoteActivity || [])];
-  // Ordenar por fecha descendente
   all.sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
 
   for (const item of all) {
@@ -234,3 +331,4 @@ export function deduplicateActivity(localActivity = [], remoteActivity = []) {
 
   return combined.slice(0, 500);
 }
+
