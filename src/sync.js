@@ -333,7 +333,6 @@ export function deduplicateActivity(localActivity = [], remoteActivity = []) {
 }
 
 export function applyRemotePull({
-
   remoteSnapshot,
   remoteActivity,
   remotePreferences,
@@ -362,7 +361,7 @@ export function applyRemotePull({
 
   return {
     snapshot: remoteSnapshot || null,
-    activity: remoteActivity || [],
+    activity: remoteActivity ? deduplicateActivity([], remoteActivity) : [],
     knownAccounts,
     profile: remoteProfile || { instagramUsername: '', displayName: '' },
     categories: remoteCategories || [],
@@ -370,5 +369,98 @@ export function applyRemotePull({
     isValid: !hasOrphanIds
   };
 }
+
+export function prepareLocalStateForPush({
+  userId,
+  localKnownAccounts = {},
+  localCategories = [],
+  remoteCategories = [],
+  localCategoryMemberships = {}
+}) {
+  // 1. Reconciliar y mapear categorías al formato remoto canónico
+  const canonicalCats = [];
+  const localIdToRemoteId = new Map();
+  const remoteNameMap = new Map();
+
+  for (const rc of remoteCategories || []) {
+    const normName = rc.name.toLowerCase().trim();
+    remoteNameMap.set(normName, rc);
+  }
+
+  const categoriesToUpsert = [];
+  for (const lc of localCategories || []) {
+    const normName = lc.name.toLowerCase().trim();
+    const existingRemote = remoteNameMap.get(normName);
+    if (existingRemote) {
+      localIdToRemoteId.set(lc.id, existingRemote.id);
+      canonicalCats.push(existingRemote);
+    } else {
+      localIdToRemoteId.set(lc.id, lc.id);
+      canonicalCats.push(lc);
+      categoriesToUpsert.push(lc);
+    }
+  }
+
+  // 2. Mapear memberships usando IDs remotos canónicos
+  const validCatIds = new Set(canonicalCats.map(c => c.id));
+  const remappedMemberships = {};
+  const membershipsToSave = [];
+
+  for (const [rawUser, catIds] of Object.entries(localCategoryMemberships || {})) {
+    const normUser = rawUser.toLowerCase().trim();
+    const remappedIds = (catIds || [])
+      .map(id => localIdToRemoteId.get(id) || id)
+      .filter(id => validCatIds.has(id));
+
+    remappedMemberships[normUser] = Array.from(new Set(remappedIds));
+    membershipsToSave.push({
+      user: normUser,
+      categoryIds: remappedMemberships[normUser]
+    });
+  }
+
+  // 3. Preparar filas de account_preferences
+  const preferenceRows = [];
+  for (const [rawUser, acc] of Object.entries(localKnownAccounts || {})) {
+    const normUser = rawUser.toLowerCase().trim();
+    preferenceRows.push(knownAccountToPreferenceRow(userId, normUser, acc));
+  }
+
+  return {
+    categoriesToUpsert,
+    canonicalCategories: canonicalCats,
+    localIdToRemoteId,
+    remappedMemberships,
+    membershipsToSave,
+    preferenceRows
+  };
+}
+
+export function createFollowCheckBackupJson({
+  snapshot,
+  activity,
+  knownAccounts,
+  categories,
+  categoryMemberships,
+  profile,
+  exportState,
+  appVersion
+}) {
+  return {
+    followcheck_backup: true,
+    version: appVersion || '0.3.16',
+    timestamp: new Date().toISOString(),
+    data: {
+      snapshot: snapshot || null,
+      activity: activity || [],
+      knownAccounts: knownAccounts || {},
+      categories: categories || [],
+      categoryMemberships: categoryMemberships || {},
+      profile: profile || { instagramUsername: '', displayName: '' },
+      exportState: exportState || null
+    }
+  };
+}
+
 
 

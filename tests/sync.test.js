@@ -6,6 +6,8 @@ import {
   reconcilePreferences,
   reconcileCategoriesAndMemberships,
   applyRemotePull,
+  prepareLocalStateForPush,
+  createFollowCheckBackupJson,
   deduplicateActivity,
   computeSnapshotFingerprint,
   hasPendingLocalDataToMigrate,
@@ -14,6 +16,7 @@ import {
   markLocalDataMigrated,
   dismissMigrationPrompt
 } from '../src/sync.js';
+
 
 
 
@@ -715,6 +718,145 @@ test('PULL 10. no se modifica base de datos ni se invocan mutations en pull', ()
 
   assert.equal(writeOperations, 0, 'No debe ejecutarse ninguna mutación ni escritura en Supabase');
 });
+
+// =========================================================================
+// TESTS DE RECUPERACIÓN V0.3.16: PUSH-ONLY, CLEANUP Y BACKUP
+// =========================================================================
+
+test('RECOVERY 1. pull deduplica activity remota aunque vengan eventos repetidos', () => {
+  const remoteAct = [
+    { username: 'user1', type: 'unfollowed', createdAt: '2026-08-28T08:00:00Z' },
+    { username: 'user1', type: 'unfollowed', createdAt: '2026-08-28T08:00:00Z' }, // duplicado
+    { username: 'user2', type: 'followed', createdAt: '2026-08-28T07:00:00Z' }
+  ];
+  const pull = applyRemotePull({ remoteActivity: remoteAct });
+  assert.equal(pull.activity.length, 2);
+});
+
+test('RECOVERY 2. push-only no descarga ni hace merge contra datos antiguos', () => {
+  const localKnown = {
+    cuenta_relevante: { group: 'relevant', famous: true, updatedAt: '2026-08-28T10:00:00Z' }
+  };
+  const pushPrep = prepareLocalStateForPush({
+    userId: 'user-master',
+    localKnownAccounts: localKnown,
+    localCategories: [],
+    remoteCategories: [],
+    localCategoryMemberships: {}
+  });
+
+  // Debe subir directamente la fila local sin cambiar el group
+  assert.equal(pushPrep.preferenceRows.length, 1);
+  assert.equal(pushPrep.preferenceRows[0].account_group, 'relevant');
+});
+
+test('RECOVERY 3. push preference relevant conserva relevant', () => {
+  const row = knownAccountToPreferenceRow('user-1', 'messi', { group: 'relevant', famous: true });
+  assert.equal(row.account_group, 'relevant');
+  assert.equal(row.famous, true);
+});
+
+test('RECOVERY 4. secondary conserva secondary en push', () => {
+  const row = knownAccountToPreferenceRow('user-1', 'noticias', { group: 'secondary', ignored: true });
+  assert.equal(row.account_group, 'secondary');
+  assert.equal(row.ignored, true);
+});
+
+test('RECOVERY 5. unavailable conserva unavailable en push', () => {
+  const row = knownAccountToPreferenceRow('user-1', 'cuenta_bloqueada', {
+    group: 'unavailable',
+    unavailableReason: 'possible_block',
+    deleted: true
+  });
+  assert.equal(row.account_group, 'unavailable');
+  assert.equal(row.unavailable_reason, 'possible_block');
+});
+
+
+test('RECOVERY 6. category local ID se remapea a remote ID por nombre canónico', () => {
+  const localCats = [{ id: 'local-cat-bm-1', name: 'Balonmano', sortOrder: 0 }];
+  const remoteCats = [{ id: 'remote-cat-canon-99', name: 'Balonmano', sortOrder: 0 }];
+
+  const pushPrep = prepareLocalStateForPush({
+    userId: 'user-1',
+    localKnownAccounts: {},
+    localCategories: localCats,
+    remoteCategories: remoteCats,
+    localCategoryMemberships: {}
+  });
+
+  assert.equal(pushPrep.localIdToRemoteId.get('local-cat-bm-1'), 'remote-cat-canon-99');
+  assert.equal(pushPrep.canonicalCategories[0].id, 'remote-cat-canon-99');
+  assert.equal(pushPrep.categoriesToUpsert.length, 0); // No necesita recrear Balonmano
+});
+
+test('RECOVERY 7. memberships usan IDs remotos remapeados', () => {
+  const localCats = [{ id: 'local-cat-bm-1', name: 'Balonmano', sortOrder: 0 }];
+  const remoteCats = [{ id: 'remote-cat-canon-99', name: 'Balonmano', sortOrder: 0 }];
+  const localMemberships = { marta: ['local-cat-bm-1'] };
+
+  const pushPrep = prepareLocalStateForPush({
+    userId: 'user-1',
+    localKnownAccounts: {},
+    localCategories: localCats,
+    remoteCategories: remoteCats,
+    localCategoryMemberships: localMemberships
+  });
+
+  assert.deepEqual(pushPrep.remappedMemberships.marta, ['remote-cat-canon-99']);
+  assert.equal(pushPrep.membershipsToSave[0].user, 'marta');
+  assert.deepEqual(pushPrep.membershipsToSave[0].categoryIds, ['remote-cat-canon-99']);
+});
+
+test('RECOVERY 8. push reemplaza memberships actuales y no hace union incorrecta con basura antigua', () => {
+  const localCats = [{ id: 'cat-1', name: 'Fútbol', sortOrder: 0 }];
+  const localMemberships = { cristiano: ['cat-1'] };
+
+  const pushPrep = prepareLocalStateForPush({
+    userId: 'user-1',
+    localKnownAccounts: {},
+    localCategories: localCats,
+    remoteCategories: localCats,
+    localCategoryMemberships: localMemberships
+  });
+
+  assert.deepEqual(pushPrep.membershipsToSave[0].categoryIds, ['cat-1']);
+});
+
+test('RECOVERY 9. activity exacta no se duplica en deduplicateActivity', () => {
+  const local = [{ username: 'u1', type: 'unfollowed', createdAt: '2026-08-28T09:00:00Z' }];
+  const remote = [
+    { username: 'u1', type: 'unfollowed', createdAt: '2026-08-28T09:00:00Z' },
+    { username: 'u1', type: 'unfollowed', createdAt: '2026-08-28T09:00:00Z' }
+  ];
+
+  const merged = deduplicateActivity(local, remote);
+  assert.equal(merged.length, 1);
+});
+
+test('RECOVERY 10. backup local contiene organización y no contiene credenciales', () => {
+  const backup = createFollowCheckBackupJson({
+    snapshot: { followers: ['a'], following: ['b'] },
+    activity: [{ username: 'b', type: 'unfollowed' }],
+    knownAccounts: { b: { group: 'secondary' } },
+    categories: [{ id: 'c1', name: 'Amigos' }],
+    categoryMemberships: { b: ['c1'] },
+    profile: { instagramUsername: 'marta', displayName: 'Marta' },
+    exportState: null,
+    appVersion: '0.3.16'
+  });
+
+  assert.equal(backup.followcheck_backup, true);
+  assert.equal(backup.version, '0.3.16');
+  assert.equal(backup.data.knownAccounts.b.group, 'secondary');
+  assert.deepEqual(backup.data.categoryMemberships.b, ['c1']);
+
+  const jsonString = JSON.stringify(backup);
+  assert.equal(jsonString.includes('password'), false);
+  assert.equal(jsonString.includes('access_token'), false);
+  assert.equal(jsonString.includes('supabase'), false);
+});
+
 
 
 

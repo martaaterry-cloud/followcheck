@@ -42,8 +42,10 @@ import { loadExportState, recordExportRequested, recordSuccessfulImport, isExpor
 import {
   reconcilePreferences, reconcileCategoriesAndMemberships, deduplicateActivity,
   hasPendingLocalDataToMigrate, isLocalDataMigrated, markLocalDataMigrated, dismissMigrationPrompt,
-  knownAccountToPreferenceRow, preferenceRowToKnownAccount
+  knownAccountToPreferenceRow, preferenceRowToKnownAccount,
+  prepareLocalStateForPush, createFollowCheckBackupJson
 } from './sync.js';
+
 
 
 const state = {
@@ -97,6 +99,8 @@ const state = {
   lastSyncAt: localStorage.getItem('fc_last_sync_at') || null,
   showMigrationPrompt: false,
   showPullConfirmModal: false,
+  showPushConfirmModal: false,
+
 
 
 
@@ -709,7 +713,7 @@ async function pullFromCloud() {
     let remoteActivity = [];
     try {
       remoteActivity = await getActivity();
-      state.activity = remoteActivity || [];
+      state.activity = deduplicateActivity([], remoteActivity || []);
       saveLocalActivity(state.activity);
     } catch (err) {
       console.warn('[pull] activity error:', err);
@@ -791,6 +795,149 @@ async function pullFromCloud() {
     render();
   }
 }
+
+async function pushLocalStateToCloud() {
+  if (!AUTH_ENABLED || !supabaseReady() || !state.user) return;
+
+  try {
+    state.syncStatus = 'syncing';
+    state.syncError = '';
+    render();
+
+    const userId = state.user.id;
+    const errors = [];
+
+    // 1. Subir Snapshot
+    if (state.snapshot && Array.isArray(state.snapshot.followers) && state.snapshot.followers.length > 0) {
+      try {
+        await saveSnapshot(state.snapshot);
+      } catch (err) {
+        console.warn('[push] snapshot error:', err);
+        errors.push(`Snapshots: ${err.message}`);
+      }
+    }
+
+    // 2. Subir Activity
+    if (state.activity && state.activity.length > 0) {
+      try {
+        const remoteActivity = await getActivity();
+        const remoteKeySet = new Set((remoteActivity || []).map(r => `${r.username}:${r.type}:${r.createdAt}`));
+        const pendingUpload = state.activity.filter(loc => !remoteKeySet.has(`${loc.username}:${loc.type}:${loc.createdAt}`));
+
+        if (pendingUpload.length > 0) {
+          await appendActivity(pendingUpload);
+        }
+      } catch (err) {
+        console.warn('[push] activity error:', err);
+        errors.push(`Actividad: ${err.message}`);
+      }
+    }
+
+    // 3. Subir Categorías, Memberships y Preferencias (Local es la fuente de verdad)
+    try {
+      const remoteCats = await getRemoteCategories(userId);
+      const pushPrep = prepareLocalStateForPush({
+        userId,
+        localKnownAccounts: state.knownAccounts,
+        localCategories: state.categories,
+        remoteCategories: remoteCats,
+        localCategoryMemberships: state.categoryMemberships
+      });
+
+      if (pushPrep.categoriesToUpsert.length > 0) {
+        await saveRemoteCategories(userId, pushPrep.categoriesToUpsert);
+      }
+
+      const updatedRemoteCats = await getRemoteCategories(userId);
+      const finalPushPrep = prepareLocalStateForPush({
+        userId,
+        localKnownAccounts: state.knownAccounts,
+        localCategories: state.categories,
+        remoteCategories: updatedRemoteCats,
+        localCategoryMemberships: state.categoryMemberships
+      });
+
+      state.categories = finalPushPrep.canonicalCategories;
+      saveLocalCategories(state.categories);
+
+      for (const item of finalPushPrep.membershipsToSave) {
+        await saveRemoteAccountCategories(userId, item.user, item.categoryIds);
+      }
+
+      state.categoryMemberships = finalPushPrep.remappedMemberships;
+      saveLocalCategoryMemberships(state.categoryMemberships);
+
+      if (finalPushPrep.preferenceRows.length > 0) {
+        await upsertRemotePreferences(userId, finalPushPrep.preferenceRows);
+      }
+    } catch (err) {
+      console.warn('[push] categories/preferences error:', err);
+      errors.push(`Organización: ${err.message}`);
+    }
+
+    // 4. Subir Perfil
+    if (state.profile?.instagramUsername || state.profile?.displayName) {
+      try {
+        await saveRemoteProfile(userId, state.profile);
+      } catch (err) {
+        console.warn('[push] profile error:', err);
+        errors.push(`Perfil: ${err.message}`);
+      }
+    }
+
+    // 5. Verificación post-push
+    if (errors.length === 0) {
+      const verifiedPrefs = await getRemotePreferences(userId);
+      const verifiedCats = await getRemoteCategories(userId);
+      console.log(`[push-verify] preferences uploaded=${Object.keys(state.knownAccounts).length} in_cloud=${verifiedPrefs.length}`);
+      console.log(`[push-verify] categories in_cloud=${verifiedCats.length}`);
+
+      const now = new Date().toISOString();
+      state.lastSyncAt = now;
+      localStorage.setItem('fc_last_sync_at', now);
+      state.syncStatus = 'synced';
+      state.syncError = '';
+    } else {
+      state.syncStatus = 'error';
+      state.syncError = 'No se han podido subir todos los datos: ' + errors.join('; ');
+    }
+  } catch (err) {
+    console.warn('[push] fatal error:', err);
+    state.syncStatus = 'error';
+    state.syncError = err.message || 'Error desconocido al subir datos';
+  } finally {
+    render();
+  }
+}
+
+function exportLocalFollowCheckBackup() {
+  try {
+    const backupObj = createFollowCheckBackupJson({
+      snapshot: state.snapshot,
+      activity: state.activity,
+      knownAccounts: state.knownAccounts,
+      categories: state.categories,
+      categoryMemberships: state.categoryMemberships,
+      profile: state.profile,
+      exportState: state.exportState,
+      appVersion: APP_VERSION
+    });
+
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(backupObj, null, 2));
+    const downloadAnchor = document.createElement('a');
+    const userTag = state.profile?.instagramUsername ? state.profile.instagramUsername.replace(/[^a-zA-Z0-9_-]/g, '') : 'usuario';
+    const filename = `followcheck-backup-${userTag}-${new Date().toISOString().slice(0, 10)}.json`;
+    downloadAnchor.setAttribute('href', dataStr);
+    downloadAnchor.setAttribute('download', filename);
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+  } catch (err) {
+    console.error('Error al exportar copia de seguridad:', err);
+    alert('No se ha podido generar la copia de seguridad: ' + err.message);
+  }
+}
+
 
 
 
@@ -882,6 +1029,30 @@ function renderPullConfirmModal() {
     </div>
   `;
 }
+
+function renderPushConfirmModal() {
+  if (!state.showPushConfirmModal) return '';
+
+  return `
+    <div class="modal-backdrop" id="pushConfirmModalBackdrop">
+      <div class="modal-sheet">
+        <div class="modal-header">
+          <h3 class="modal-title">¿Subir este dispositivo a la nube?</h3>
+        </div>
+        <p class="sub" style="margin-top: 0; line-height: 1.5;">
+          Este dispositivo se utilizará como fuente para actualizar la organización guardada en la nube.<br><br>
+          <strong style="color: #fff;">Utiliza esta opción solo en el dispositivo que contiene los datos correctos.</strong>
+        </p>
+
+        <div style="margin: 20px 0 10px; display: flex; flex-direction: column; gap: 8px;">
+          <button id="btnConfirmPush" class="primary">Subir a la nube</button>
+          <button id="btnCancelPush" class="ghost">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 
 
 function renderAccountPopover(u, group, acc) {
@@ -1673,14 +1844,21 @@ function renderApp() {
                 <button class="secondary" id="syncNowBtn" style="width: 100%;" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
                   ${state.syncStatus === 'syncing' ? 'Sincronizando…' : 'Sincronizar ahora'}
                 </button>
+                <button class="secondary" id="pushToCloudBtn" style="width: 100%;" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
+                  Subir este dispositivo a la nube
+                </button>
                 <button class="secondary" id="pullFromCloudBtn" style="width: 100%; background: rgba(255,255,255,0.06);" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
                   Recoger datos de la nube
                 </button>
+                <button class="ghost" id="exportBackupBtn" style="width: 100%; margin-top: 4px; font-size: 13px;">
+                  Exportar copia de seguridad
+                </button>
                 <div style="font-size: 11px; color: var(--text-secondary); text-align: center; margin-top: 2px;">
-                  Descarga la copia guardada en Supabase y actualiza este dispositivo.
+                  Sincroniza bidireccionalmente o usa un dispositivo como copia maestra.
                 </div>
               </div>
             </div>
+
 
           ` : ''}
 
@@ -1739,7 +1917,9 @@ function renderApp() {
       ${renderUpdateModal()}
       ${renderMigrationModal()}
       ${renderPullConfirmModal()}
+      ${renderPushConfirmModal()}
       ${renderOrganizeModal()}
+
 
       ${renderManageCategoriesModal()}
       ${renderDeleteConfirmModal()}
@@ -2287,13 +2467,37 @@ function attachListeners() {
     });
   }
 
-  const btnCancelPull = document.querySelector('#btnCancelPull');
-  if (btnCancelPull) {
-    btnCancelPull.addEventListener('click', () => {
-      state.showPullConfirmModal = false;
+  const pushToCloudBtn = document.querySelector('#pushToCloudBtn');
+  if (pushToCloudBtn) {
+    pushToCloudBtn.addEventListener('click', () => {
+      state.showPushConfirmModal = true;
       render();
     });
   }
+
+  const btnConfirmPush = document.querySelector('#btnConfirmPush');
+  if (btnConfirmPush) {
+    btnConfirmPush.addEventListener('click', async () => {
+      state.showPushConfirmModal = false;
+      await pushLocalStateToCloud();
+    });
+  }
+
+  const btnCancelPush = document.querySelector('#btnCancelPush');
+  if (btnCancelPush) {
+    btnCancelPush.addEventListener('click', () => {
+      state.showPushConfirmModal = false;
+      render();
+    });
+  }
+
+  const exportBackupBtn = document.querySelector('#exportBackupBtn');
+  if (exportBackupBtn) {
+    exportBackupBtn.addEventListener('click', () => {
+      exportLocalFollowCheckBackup();
+    });
+  }
+
 
 
   // Botones de Migración Local
