@@ -729,9 +729,10 @@ input:-webkit-autofill:active {
 /* Selector de Grupos Principales (Nivel 1 Tabs) */
 .filter-group {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
   margin: 12px 0 12px;
+
   background: var(--panel);
   padding: 4px;
   border-radius: var(--radius-md);

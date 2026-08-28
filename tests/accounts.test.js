@@ -86,7 +86,7 @@ test('4. Ignored prevalece sobre famous automático', () => {
   assert.deepEqual(categorized.famous, []);
 });
 
-test('5. Deleted prevalece sobre todo', () => {
+test('5. Deleted prevalece y pasa a No me siguen', () => {
   let knownAccounts = {
     'badbunnypr': createAccountRecord('badbunnypr', {
       deleted: true
@@ -105,10 +105,11 @@ test('5. Deleted prevalece sobre todo', () => {
 
   const notBack = calculateNotFollowingBack(snapshot);
   const categorized = categorizeNotFollowingBack(notBack, synced);
-  assert.ok(categorized.deleted.includes('badbunnypr'));
-  assert.ok(categorized.deleted.includes('__deleted__artist'));
+  assert.ok(categorized.notFollowingBack.includes('badbunnypr'));
+  assert.ok(categorized.notFollowingBack.includes('__deleted__artist'));
   assert.deepEqual(categorized.famous, []);
 });
+
 
 test('6. autoFamousDismissed evita reclasificación futura', () => {
   let knownAccounts = {

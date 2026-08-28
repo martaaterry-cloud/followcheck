@@ -55,7 +55,8 @@ const state = {
   currentView: 'homeView', // 'homeView' | 'notBackView' | 'activityView' | 'settingsView'
   notBackSearch: '',
   selectedCategoryFilter: 'all', // 'all' | 'uncategorized' | categoryId
-  systemStateFilter: 'notBack', // 'notBack' | 'relevant' | 'secondary' | 'unavailable'
+  systemStateFilter: 'notBack', // 'notBack' | 'relevant' | 'secondary'
+
   activityFilter: 'all', // 'all' | 'unfollowed' | 'followed'
   activeMenuUser: null,
   activeMenuPosition: null, // { top, bottom, left, openUp }
@@ -660,12 +661,10 @@ function renderAccountPopover(u, group, acc) {
 
   let actionsHtml = '';
 
-  if (group === 'normal') {
+  if (group === 'normal' || group === 'unavailable') {
     actionsHtml = `
       <button class="popover-item" data-action="move-relevant" data-user="${esc(u)}">Mover a relevantes</button>
       <button class="popover-item" data-action="move-secondary" data-user="${esc(u)}">Mover a cuentas secundarias</button>
-      <button class="popover-item" data-action="move-unavailable" data-user="${esc(u)}">Marcar como no disponible</button>
-      <button class="popover-item" data-action="move-possible-block" data-user="${esc(u)}">Marcar como posible bloqueo</button>
       <button class="popover-item danger" data-action="delete-account" data-user="${esc(u)}">Eliminar de FollowCheck</button>
     `;
   } else if (group === 'relevant') {
@@ -676,23 +675,12 @@ function renderAccountPopover(u, group, acc) {
       ${isAuto ? `<div class="popover-reason">${esc(reasonText)}</div>` : ''}
       <button class="popover-item" data-action="move-normal" data-user="${esc(u)}">Mover a No me siguen</button>
       <button class="popover-item" data-action="move-secondary" data-user="${esc(u)}">Mover a cuentas secundarias</button>
-      <button class="popover-item" data-action="move-unavailable" data-user="${esc(u)}">Marcar como no disponible</button>
       <button class="popover-item danger" data-action="delete-account" data-user="${esc(u)}">Eliminar de FollowCheck</button>
     `;
   } else if (group === 'secondary') {
     actionsHtml = `
       <button class="popover-item" data-action="move-normal" data-user="${esc(u)}">Mover a No me siguen</button>
       <button class="popover-item" data-action="move-relevant" data-user="${esc(u)}">Mover a relevantes</button>
-      <button class="popover-item" data-action="move-unavailable" data-user="${esc(u)}">Marcar como no disponible</button>
-      <button class="popover-item danger" data-action="delete-account" data-user="${esc(u)}">Eliminar de FollowCheck</button>
-    `;
-  } else if (group === 'unavailable') {
-    actionsHtml = `
-      <button class="popover-item" data-action="move-normal" data-user="${esc(u)}">Restaurar a No me siguen</button>
-      <button class="popover-item" data-action="move-relevant" data-user="${esc(u)}">Mover a relevantes</button>
-      ${acc?.unavailableReason !== 'possible_block' ? `
-        <button class="popover-item" data-action="move-possible-block" data-user="${esc(u)}">Marcar como posible bloqueo</button>
-      ` : ''}
       <button class="popover-item danger" data-action="delete-account" data-user="${esc(u)}">Eliminar de FollowCheck</button>
     `;
   }
@@ -1027,22 +1015,19 @@ function renderUpdateModal() {
 }
 
 function renderApp() {
-  console.log('[groups] render state', state.systemStateFilter);
   const snapshot = state.snapshot;
   const notBackAll = calculateNotFollowingBack(snapshot);
   const categorized = categorizeNotFollowingBack(notBackAll, state.knownAccounts);
 
-  // Lista base según el estado del sistema seleccionado
+  // Lista base según el estado del sistema seleccionado (3 grupos principales)
+  if (state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') {
+    state.systemStateFilter = 'notBack';
+  }
+
   let baseList = categorized.notFollowingBack;
   if (state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') baseList = categorized.relevant;
   if (state.systemStateFilter === 'secondary' || state.systemStateFilter === 'ignored') baseList = categorized.secondary;
-  if (state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') baseList = categorized.unavailable;
 
-  console.log('[groups] counts:', {
-    filter: state.systemStateFilter,
-    categorizedUnavailable: categorized.unavailable.length,
-    baseList: baseList.length
-  });
 
 
   // Filtrado por subcategoría SOLO si estamos en el grupo Relevantes
@@ -1189,7 +1174,7 @@ function renderApp() {
             <input id="searchNotBack" type="text" placeholder="Buscar por usuario…" value="${esc(state.notBackSearch)}" />
           </div>
 
-          <!-- Nivel 1: Selector de 4 Grupos Principales (Delegado + Directo) -->
+          <!-- Nivel 1: Selector de 3 Grupos Principales (Delegado + Directo) -->
           <div class="filter-group" id="groupTabsContainer">
             <button type="button" class="filter-btn group-tab ${state.systemStateFilter === 'notBack' ? 'active' : ''}" data-account-group="notBack">
               <span>No me siguen</span>
@@ -1203,11 +1188,8 @@ function renderApp() {
               <span>Secundarias</span>
               <span class="filter-btn-count">${categorized.secondary.length}</span>
             </button>
-            <button type="button" class="filter-btn group-tab ${state.systemStateFilter === 'unavailable' ? 'active' : ''}" data-account-group="unavailable">
-              <span>No disponibles</span>
-              <span class="filter-btn-count">${categorized.unavailable.length}</span>
-            </button>
           </div>
+
 
 
           <!-- Nivel 2: Barra horizontal de Subcategorías (SOLO para Relevantes) -->
@@ -1497,15 +1479,11 @@ function attachListeners() {
 
   // Helper único y centralizado para cambiar de grupo
   function setAccountGroup(group) {
-    console.log('[groups] before', state.systemStateFilter);
-    console.log('[groups] requested', group);
-    if (!['notBack', 'relevant', 'secondary', 'unavailable'].includes(group)) return;
+    if (!['notBack', 'relevant', 'secondary'].includes(group)) return;
     state.systemStateFilter = group;
-    console.log('[groups] after set', state.systemStateFilter);
     state.selectedCategoryFilter = 'all';
     state.activeMenuUser = null;
     state.activeMenuPosition = null;
-    console.log('[groups] before render', state.systemStateFilter);
     render();
   }
 
@@ -1513,9 +1491,7 @@ function attachListeners() {
   const groupTabsContainer = document.querySelector('#groupTabsContainer');
   if (groupTabsContainer) {
     groupTabsContainer.addEventListener('click', (e) => {
-      console.log('[groups] tap target', e.target);
       const tab = e.target.closest('[data-account-group]');
-      console.log('[groups] tab', tab?.dataset?.accountGroup);
       if (!tab) return;
       setAccountGroup(tab.dataset.accountGroup);
     });
@@ -1525,10 +1501,10 @@ function attachListeners() {
   document.querySelectorAll('[data-account-group]').forEach(btn => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
-      console.log('[groups] direct btn click:', btn.dataset.accountGroup);
       setAccountGroup(btn.dataset.accountGroup);
     });
   });
+
 
 
 

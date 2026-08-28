@@ -269,7 +269,6 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
   const secondary = [];
   const unavailable = [];
   const suggestions = [];
-  const seenUnavailable = new Set();
 
   for (const rawUsername of notFollowingBackList) {
     const u = normalizeUsername(rawUsername);
@@ -279,14 +278,12 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
     const autoDel = isAutoDeleted(u);
     const group = resolveAccountGroup(acc, autoDel);
 
-    if (group === 'unavailable') {
-      unavailable.push(rawUsername);
-      seenUnavailable.add(u);
-    } else if (group === 'secondary') {
+    if (group === 'secondary') {
       secondary.push(rawUsername);
     } else if (group === 'relevant') {
       relevant.push(rawUsername);
     } else {
+      // normal y cuentas antes en unavailable pasan directamente a No me siguen
       notFollowingBack.push(rawUsername);
 
       // Sugerencias automáticas
@@ -300,25 +297,11 @@ export function categorizeNotFollowingBack(notFollowingBackList = [], knownAccou
     }
   }
 
-  // Incluir también cuentas en knownAccounts marcadas como 'unavailable' o con unavailableReason
-  // que ya no estén presentes en notFollowingBackList (ej. cuentas borradas o bloqueos preservados)
-  for (const [rawU, acc] of Object.entries(accounts)) {
-    const u = normalizeUsername(rawU);
-    if (!u || seenUnavailable.has(u)) continue;
-
-    const autoDel = isAutoDeleted(u);
-    const group = resolveAccountGroup(acc, autoDel);
-    if (group === 'unavailable') {
-      unavailable.push(rawU);
-      seenUnavailable.add(u);
-    }
-  }
-
   return {
     notFollowingBack,
     relevant,
     secondary,
-    unavailable,
+    unavailable: [],
     suggestions,
     // Alias para compatibilidad con código existente
     famous: relevant,
