@@ -90,8 +90,10 @@ const state = {
 
   // Sincronización Nube + Dispositivo
   syncStatus: 'idle', // 'idle' | 'syncing' | 'synced' | 'offline' | 'error'
+  syncError: '',
   lastSyncAt: localStorage.getItem('fc_last_sync_at') || null,
   showMigrationPrompt: false,
+
 
   // Modal de actualización guiada
   isUpdateModalOpen: false,
@@ -523,72 +525,110 @@ async function syncWithCloud(silent = false) {
   try {
     if (!silent) {
       state.syncStatus = 'syncing';
+      state.syncError = '';
       render();
     }
 
     const userId = state.user.id;
+    const errors = [];
 
     // 1. Sincronizar Snapshot
-    const remoteSnapshot = await getLatestSnapshot();
-    if (remoteSnapshot) {
-      state.snapshot = remoteSnapshot;
-    } else if (state.snapshot && state.snapshot.followers && state.snapshot.followers.length > 0) {
-      await saveSnapshot(state.snapshot);
+    try {
+      const remoteSnapshot = await getLatestSnapshot();
+      if (remoteSnapshot) {
+        state.snapshot = remoteSnapshot;
+        saveLocalSnapshot(remoteSnapshot);
+      } else if (state.snapshot && state.snapshot.followers && state.snapshot.followers.length > 0) {
+        await saveSnapshot(state.snapshot);
+      }
+    } catch (err) {
+      console.warn('[sync] snapshot error:', err);
+      errors.push(`Snapshots: ${err.message}`);
     }
 
     // 2. Sincronizar Activity
-    const remoteActivity = await getActivity();
-    state.activity = deduplicateActivity(state.activity, remoteActivity);
-    saveLocalActivity(state.activity);
-
+    try {
+      const remoteActivity = await getActivity();
+      state.activity = deduplicateActivity(state.activity, remoteActivity);
+      saveLocalActivity(state.activity);
+    } catch (err) {
+      console.warn('[sync] activity error:', err);
+      errors.push(`Actividad: ${err.message}`);
+    }
 
     // 3. Sincronizar Account Preferences (knownAccounts)
-    const remotePrefs = await getRemotePreferences(userId);
-    const { mergedKnownAccounts, pendingPushRows } = reconcilePreferences(state.knownAccounts, remotePrefs, userId);
+    try {
+      const remotePrefs = await getRemotePreferences(userId);
+      const { mergedKnownAccounts, pendingPushRows } = reconcilePreferences(state.knownAccounts, remotePrefs, userId);
 
-    state.knownAccounts = mergedKnownAccounts;
-    saveLocalKnownAccounts(mergedKnownAccounts);
+      state.knownAccounts = mergedKnownAccounts;
+      saveLocalKnownAccounts(mergedKnownAccounts);
 
-    if (pendingPushRows.length > 0) {
-      await upsertRemotePreferences(userId, pendingPushRows);
+      if (pendingPushRows.length > 0) {
+        await upsertRemotePreferences(userId, pendingPushRows);
+      }
+    } catch (err) {
+      console.warn('[sync] preferences error:', err);
+      errors.push(`Preferencias: ${err.message}`);
     }
 
     // 4. Sincronizar Perfil de Usuario
-    const remoteProf = await getRemoteProfile(userId);
-    if (remoteProf && (remoteProf.instagramUsername || remoteProf.displayName)) {
-      state.profile = remoteProf;
-      saveLocalProfile(remoteProf);
-    } else if (state.profile.instagramUsername || state.profile.displayName) {
-      await saveRemoteProfile(userId, state.profile);
+    try {
+      const remoteProf = await getRemoteProfile(userId);
+      if (remoteProf && (remoteProf.instagramUsername || remoteProf.displayName)) {
+        state.profile = remoteProf;
+        saveLocalProfile(remoteProf);
+      } else if (state.profile?.instagramUsername || state.profile?.displayName) {
+        await saveRemoteProfile(userId, state.profile);
+      }
+    } catch (err) {
+      console.warn('[sync] profile error:', err);
     }
 
     // 5. Sincronizar Categorías
-    const remoteCats = await getRemoteCategories(userId);
-    if (remoteCats && remoteCats.length > 0) {
-      state.categories = remoteCats;
-      saveLocalCategories(remoteCats);
-    } else if (state.categories && state.categories.length > 0) {
-      await saveRemoteCategories(userId, state.categories);
+    try {
+      const remoteCats = await getRemoteCategories(userId);
+      if (remoteCats && remoteCats.length > 0) {
+        state.categories = remoteCats;
+        saveLocalCategories(remoteCats);
+      } else if (state.categories && state.categories.length > 0) {
+        await saveRemoteCategories(userId, state.categories);
+      }
+    } catch (err) {
+      console.warn('[sync] categories error:', err);
     }
 
     // 6. Sincronizar Memberships
-    const remoteMemberships = await getRemoteCategoryMemberships(userId);
-    if (remoteMemberships && Object.keys(remoteMemberships).length > 0) {
-      state.categoryMemberships = remoteMemberships;
-      saveLocalCategoryMemberships(remoteMemberships);
+    try {
+      const remoteMemberships = await getRemoteCategoryMemberships(userId);
+      if (remoteMemberships && Object.keys(remoteMemberships).length > 0) {
+        state.categoryMemberships = remoteMemberships;
+        saveLocalCategoryMemberships(remoteMemberships);
+      }
+    } catch (err) {
+      console.warn('[sync] memberships error:', err);
     }
 
     const now = new Date().toISOString();
     state.lastSyncAt = now;
     localStorage.setItem('fc_last_sync_at', now);
-    state.syncStatus = 'synced';
+
+    if (errors.length > 0) {
+      state.syncStatus = 'error';
+      state.syncError = errors.join('; ');
+    } else {
+      state.syncStatus = 'synced';
+      state.syncError = '';
+    }
   } catch (err) {
-    console.warn('Error durante sincronización con Supabase:', err);
+    console.warn('Error general durante sincronización con Supabase:', err);
     state.syncStatus = 'error';
+    state.syncError = err.message || 'Error desconocido';
   } finally {
     render();
   }
 }
+
 
 let isAuthSyncing = false;
 
@@ -1436,6 +1476,11 @@ function renderApp() {
                   <span class="settings-value">${formatDate(state.lastSyncAt)}</span>
                 </div>
               </div>
+              ${state.syncError ? `
+                <div class="status error" style="margin-top: 10px; font-size: 12px; word-break: break-word;">
+                  ${esc(state.syncError)}
+                </div>
+              ` : ''}
               <div style="margin-top: 12px;">
                 <button class="secondary" id="syncNowBtn" style="width: 100%;" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
                   ${state.syncStatus === 'syncing' ? 'Sincronizando…' : 'Sincronizar ahora'}
@@ -1443,6 +1488,7 @@ function renderApp() {
               </div>
             </div>
           ` : ''}
+
 
           <!-- Diagnóstico del sistema -->
           <div class="card settings-card">
@@ -1746,6 +1792,7 @@ function attachListeners() {
 
       if (AUTH_ENABLED && state.user && state.knownAccounts[user]) {
         upsertSingleRemotePreference(state.user.id, user, state.knownAccounts[user]);
+        syncWithCloud(true);
       }
     });
   });
@@ -1784,9 +1831,11 @@ function attachListeners() {
       if (AUTH_ENABLED && state.user) {
         const assigned = getAccountCategories(state.categoryMemberships, user);
         await saveRemoteAccountCategories(state.user.id, user, assigned);
+        syncWithCloud(true);
       }
     });
   });
+
 
   // Añadir categoría rápida desde modal Organizar
   const quickNewCatInput = document.querySelector('#quickNewCatInput');

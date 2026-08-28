@@ -177,9 +177,25 @@ export async function upsertRemotePreferences(userId, prefsList) {
     .upsert(prefsList, { onConflict: 'user_id,username' });
 
   if (error) {
-    console.warn('Error al guardar account_preferences en Supabase:', error);
+    console.warn('Error al guardar account_preferences en Supabase, intentando fallback compatible:', error);
+    // Si la columna account_group o unavailable_reason no existe en Supabase aún, intentar sin esas columnas
+    if (error.message?.includes('account_group') || error.message?.includes('unavailable_reason') || error.code === '42703') {
+      const fallbackRows = prefsList.map(r => {
+        const copy = { ...r };
+        delete copy.account_group;
+        delete copy.unavailable_reason;
+        return copy;
+      });
+      const { error: fallbackErr } = await supabase
+        .from('account_preferences')
+        .upsert(fallbackRows, { onConflict: 'user_id,username' });
+      if (fallbackErr) {
+        console.warn('Error en fallback de account_preferences:', fallbackErr);
+      }
+    }
   }
 }
+
 
 export async function upsertSingleRemotePreference(userId, username, acc) {
   if (!AUTH_ENABLED || !supabaseReady() || !userId || !username || !acc) return;
