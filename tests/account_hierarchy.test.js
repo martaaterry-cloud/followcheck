@@ -5,7 +5,8 @@ import {
   classifyAccount,
   categorizeNotFollowingBack,
   resolveAccountGroup,
-  isAutoDeleted
+  isAutoDeleted,
+  instagramProfileUrl
 } from '../src/accounts.js';
 import {
   knownAccountToPreferenceRow,
@@ -15,6 +16,7 @@ import {
 import {
   getAccountCategories,
   setAccountCategories,
+  toggleAccountCategory,
   isAccountUncategorized,
   countAccountsPerCategory
 } from '../src/categories.js';
@@ -187,4 +189,95 @@ test('12. subcategorías se contabilizan y filtran correctamente en el grupo Rel
   assert.equal(counts.uncategorized, 1);
   assert.equal(counts.cat_futbol, 2);
   assert.equal(counts.cat_balonmano, 1);
+});
+
+// NUEVOS TESTS UX FASE E.1
+
+test('13. cambiar activeGroup actualiza grupo y no me siguen es seleccionable desde cualquier grupo', () => {
+  let known = {};
+  known = classifyAccount(known, 'user_a', { group: 'relevant' });
+  known = classifyAccount(known, 'user_b', { group: 'secondary' });
+  known = classifyAccount(known, 'user_c', { group: 'unavailable' });
+  known = classifyAccount(known, 'user_d', { group: 'normal' });
+
+  const allUsers = ['user_a', 'user_b', 'user_c', 'user_d'];
+  const categorized = categorizeNotFollowingBack(allUsers, known);
+
+  assert.deepEqual(categorized.relevant, ['user_a']);
+  assert.deepEqual(categorized.secondary, ['user_b']);
+  assert.deepEqual(categorized.unavailable, ['user_c']);
+  assert.deepEqual(categorized.notFollowingBack, ['user_d']);
+
+  // Mover user_a de vuelta a 'normal' (No me siguen)
+  known = classifyAccount(known, 'user_a', { group: 'normal' });
+  const reCategorized = categorizeNotFollowingBack(allUsers, known);
+  assert.equal(reCategorized.notFollowingBack.includes('user_a'), true);
+  assert.equal(reCategorized.relevant.includes('user_a'), false);
+});
+
+test('14. cuenta relevante sin membership aparece en Sin categoría', () => {
+  const memberships = {};
+  assert.equal(isAccountUncategorized(memberships, 'celebrity_1'), true);
+
+  const categories = [{ id: 'cat_fit', name: 'Gimnasio' }];
+  const counts = countAccountsPerCategory(['celebrity_1'], memberships, categories);
+  assert.equal(counts.uncategorized, 1);
+  assert.equal(counts.cat_fit, 0);
+});
+
+test('15. asignar subcategoría mueve contador y permite asignar múltiples subcategorías', () => {
+  const categories = [
+    { id: 'cat_balonmano', name: 'Balonmano' },
+    { id: 'cat_influencers', name: 'Influencers' }
+  ];
+
+  let memberships = {};
+  // Asignar Balonmano
+  memberships = toggleAccountCategory(memberships, 'estrella', 'cat_balonmano');
+  assert.equal(isAccountUncategorized(memberships, 'estrella'), false);
+
+  let counts = countAccountsPerCategory(['estrella'], memberships, categories);
+  assert.equal(counts.cat_balonmano, 1);
+  assert.equal(counts.cat_influencers, 0);
+  assert.equal(counts.uncategorized, 0);
+
+  // Asignar también Influencers
+  memberships = toggleAccountCategory(memberships, 'estrella', 'cat_influencers');
+  counts = countAccountsPerCategory(['estrella'], memberships, categories);
+  assert.equal(counts.cat_balonmano, 1);
+  assert.equal(counts.cat_influencers, 1);
+  assert.equal(counts.uncategorized, 0);
+});
+
+test('16. quitar todas las subcategorías vuelve a Sin categoría', () => {
+  const categories = [{ id: 'cat_futbol', name: 'Fútbol' }];
+  let memberships = {
+    jugador: ['cat_futbol']
+  };
+
+  assert.equal(isAccountUncategorized(memberships, 'jugador'), false);
+
+  // Desmarcar
+  memberships = toggleAccountCategory(memberships, 'jugador', 'cat_futbol');
+  assert.equal(isAccountUncategorized(memberships, 'jugador'), true);
+
+  const counts = countAccountsPerCategory(['jugador'], memberships, categories);
+  assert.equal(counts.uncategorized, 1);
+  assert.equal(counts.cat_futbol, 0);
+});
+
+test('17. organizar no cambia account_group', () => {
+  let known = {
+    jugador: { group: 'relevant', famous: true }
+  };
+  let memberships = {};
+
+  memberships = toggleAccountCategory(memberships, 'jugador', 'cat_futbol');
+  assert.equal(known.jugador.group, 'relevant');
+  assert.deepEqual(getAccountCategories(memberships, 'jugador'), ['cat_futbol']);
+});
+
+test('18. username sigue abriendo Instagram con instagramProfileUrl', () => {
+  assert.equal(instagramProfileUrl('marta_terry'), 'https://www.instagram.com/marta_terry/');
+  assert.equal(instagramProfileUrl('__deleted__abc'), null);
 });

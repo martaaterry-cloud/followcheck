@@ -122,9 +122,14 @@ function renderUsername(username, extraClass = '') {
   return `<span class="username-plain ${extraClass}">${safeName}</span>`;
 }
 
-function renderAccountCategoryBadges(username) {
+function renderAccountCategoryBadges(username, isRelevant = true) {
   const catIds = getAccountCategories(state.categoryMemberships, username);
-  if (!catIds || catIds.length === 0) return '';
+  if (!catIds || catIds.length === 0) {
+    if (isRelevant) {
+      return `<div class="account-badges"><span class="account-category-tag uncat-tag">Sin categoría</span></div>`;
+    }
+    return '';
+  }
   const catMap = new Map((state.categories || []).map(c => [c.id, c.name]));
   const tags = catIds
     .map(id => catMap.get(id))
@@ -133,6 +138,7 @@ function renderAccountCategoryBadges(username) {
     .join('');
   return tags ? `<div class="account-badges">${tags}</div>` : '';
 }
+
 
 // Iconos SVG Minimalistas
 const icons = {
@@ -701,12 +707,12 @@ function renderAccountRow(u, group, acc) {
 
   if (group === 'relevant') {
     if (acc?.famousSource === 'auto') {
-      pillHtml = '<div class="pill auto">Detectada automáticamente</div>';
+      pillHtml = '<div class="pill auto">Automática</div>';
     } else {
       pillHtml = '<div class="pill info">Relevante</div>';
     }
   } else if (group === 'secondary') {
-    pillHtml = '<div class="pill muted-pill">Cuenta secundaria</div>';
+    pillHtml = '<div class="pill muted-pill">Secundaria</div>';
   } else if (group === 'unavailable') {
     if (acc?.unavailableReason === 'possible_block') {
       pillHtml = '<div class="pill bad-soft-pill">Posible bloqueo</div>';
@@ -717,7 +723,7 @@ function renderAccountRow(u, group, acc) {
     }
   }
 
-  const categoryBadgesHtml = group === 'relevant' ? renderAccountCategoryBadges(u) : '';
+  const categoryBadgesHtml = group === 'relevant' ? renderAccountCategoryBadges(u, true) : '';
 
   return `
     <div class="account-row">
@@ -730,14 +736,15 @@ function renderAccountRow(u, group, acc) {
         </div>
       </div>
       <div class="account-actions">
-        ${pillHtml}
+        ${group === 'relevant' ? `
+          <button class="btn-organize" data-organize-user="${esc(u)}" title="Organizar subcategorías">Organizar</button>
+        ` : pillHtml}
         <button class="menu-btn ${isMenuOpen ? 'active' : ''}" data-menu-user="${esc(u)}" title="Opciones" aria-label="Opciones de cuenta">⋯</button>
       </div>
       ${isMenuOpen ? renderAccountPopover(u, group, acc) : ''}
     </div>
   `;
 }
-
 
 function renderOrganizeModal() {
   if (!state.isOrganizeModalOpen || !state.organizeTargetUser) return '';
@@ -750,11 +757,11 @@ function renderOrganizeModal() {
     <div class="modal-backdrop" id="organizeModalBackdrop">
       <div class="modal-sheet">
         <div class="modal-header">
-          <h3 class="modal-title">Organizar ${renderUsername(u)}</h3>
+          <h3 class="modal-title">Organizar cuenta ${renderUsername(u)}</h3>
           <button class="modal-close" id="btnCloseOrganizeModal" title="Cerrar">${icons.close}</button>
         </div>
         <p class="sub" style="margin-top: 0; line-height: 1.4;">
-          Selecciona las categorías en las que deseas clasificar esta cuenta:
+          Selecciona las subcategorías en las que deseas clasificar esta cuenta relevante:
         </p>
 
         <div class="category-select-list">
@@ -774,12 +781,12 @@ function renderOrganizeModal() {
           }).join('')}
         </div>
 
-        <!-- Añadir nueva categoría rápida -->
+        <!-- Añadir nueva subcategoría rápida -->
         <div style="display: flex; gap: 6px; margin-top: 10px;">
           <input
             id="quickNewCatInput"
             type="text"
-            placeholder="Nueva categoría…"
+            placeholder="Nueva subcategoría…"
             value="${esc(state.newCategoryNameInput)}"
             style="flex: 1;"
           />
@@ -787,12 +794,13 @@ function renderOrganizeModal() {
         </div>
 
         <div style="margin-top: 16px;">
-          <button id="btnDoneOrganize" class="primary" style="width: 100%;">Listo</button>
+          <button id="btnDoneOrganize" class="primary" style="width: 100%;">Guardar</button>
         </div>
       </div>
     </div>
   `;
 }
+
 
 function renderManageCategoriesModal() {
   if (!state.isManageCategoriesModalOpen) return '';
@@ -1136,37 +1144,48 @@ function renderApp() {
           </div>
 
           <!-- Nivel 1: Selector de 4 Grupos Principales -->
-          <div class="filter-group" style="margin-bottom: 10px;">
+          <div class="filter-group">
             <button class="filter-btn ${state.systemStateFilter === 'notBack' ? 'active' : ''}" data-state-filter="notBack">
-              No me siguen (${categorized.notFollowingBack.length})
+              <span>No me siguen</span>
+              <span class="filter-btn-count">${categorized.notFollowingBack.length}</span>
             </button>
             <button class="filter-btn ${state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous' ? 'active' : ''}" data-state-filter="relevant">
-              Relevantes (${categorized.relevant.length})
+              <span>Relevantes</span>
+              <span class="filter-btn-count">${categorized.relevant.length}</span>
             </button>
             <button class="filter-btn ${state.systemStateFilter === 'secondary' || state.systemStateFilter === 'ignored' ? 'active' : ''}" data-state-filter="secondary">
-              Secundarias (${categorized.secondary.length})
+              <span>Secundarias</span>
+              <span class="filter-btn-count">${categorized.secondary.length}</span>
             </button>
             <button class="filter-btn ${state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted' ? 'active' : ''}" data-state-filter="unavailable">
-              No disponibles (${categorized.unavailable.length})
+              <span>No disponibles</span>
+              <span class="filter-btn-count">${categorized.unavailable.length}</span>
             </button>
           </div>
 
           <!-- Nivel 2: Barra horizontal de Subcategorías (SOLO para Relevantes) -->
           ${(state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') ? `
-            <div class="category-pills-bar">
-              <button class="category-pill ${state.selectedCategoryFilter === 'all' ? 'active' : ''}" data-cat-filter="all">
-                Todos <span class="pill-count">${categoryCounts.all}</span>
-              </button>
-              <button class="category-pill ${state.selectedCategoryFilter === 'uncategorized' ? 'active' : ''}" data-cat-filter="uncategorized">
-                Sin categoría <span class="pill-count">${categoryCounts.uncategorized}</span>
-              </button>
-              ${(state.categories || []).map(cat => `
-                <button class="category-pill ${state.selectedCategoryFilter === cat.id ? 'active' : ''}" data-cat-filter="${esc(cat.id)}">
-                  ${esc(cat.name)} <span class="pill-count">${categoryCounts[cat.id] || 0}</span>
+            <div class="subcategories-section">
+              <div class="subcategories-title">
+                <span>Subcategorías</span>
+                <button id="btnQuickManageCats" class="btn-text-action">Gestionar</button>
+              </div>
+              <div class="category-pills-bar">
+                <button class="category-pill ${state.selectedCategoryFilter === 'all' ? 'active' : ''}" data-cat-filter="all">
+                  Todos <span class="pill-count">${categoryCounts.all}</span>
                 </button>
-              `).join('')}
+                <button class="category-pill ${state.selectedCategoryFilter === 'uncategorized' ? 'active' : ''}" data-cat-filter="uncategorized">
+                  Sin categoría <span class="pill-count">${categoryCounts.uncategorized}</span>
+                </button>
+                ${(state.categories || []).map(cat => `
+                  <button class="category-pill ${state.selectedCategoryFilter === cat.id ? 'active' : ''}" data-cat-filter="${esc(cat.id)}">
+                    ${esc(cat.name)} <span class="pill-count">${categoryCounts[cat.id] || 0}</span>
+                  </button>
+                `).join('')}
+              </div>
             </div>
           ` : ''}
+
 
           <!-- Sugerencias de cuentas relevantes (en No me siguen) -->
           ${snapshot && state.systemStateFilter === 'notBack' && suggestionsFiltered.length ? `
@@ -1429,22 +1448,60 @@ function attachListeners() {
 
   // Filtros de Grupo Principal en Cuentas (Nivel 1)
   document.querySelectorAll('[data-state-filter]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.systemStateFilter = btn.dataset.stateFilter;
-      state.selectedCategoryFilter = 'all';
-      state.activeMenuUser = null;
-      render();
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const targetFilter = btn.dataset.stateFilter || btn.closest('[data-state-filter]')?.dataset.stateFilter;
+      if (targetFilter) {
+        state.systemStateFilter = targetFilter;
+        state.selectedCategoryFilter = 'all';
+        state.activeMenuUser = null;
+        state.activeMenuPosition = null;
+        render();
+      }
     });
   });
 
   // Filtros de Subcategorías (Nivel 2)
   document.querySelectorAll('[data-cat-filter]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      state.selectedCategoryFilter = btn.dataset.catFilter;
-      state.activeMenuUser = null;
-      render();
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const targetCat = btn.dataset.catFilter || btn.closest('[data-cat-filter]')?.dataset.catFilter;
+      if (targetCat) {
+        state.selectedCategoryFilter = targetCat;
+        state.activeMenuUser = null;
+        state.activeMenuPosition = null;
+        render();
+      }
     });
   });
+
+  // Botón directo "Organizar" en cada cuenta relevante
+  document.querySelectorAll('[data-organize-user]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const user = btn.dataset.organizeUser;
+      if (user) {
+        state.activeMenuUser = null;
+        state.activeMenuPosition = null;
+        state.organizeTargetUser = user;
+        state.isOrganizeModalOpen = true;
+        state.newCategoryNameInput = '';
+        render();
+      }
+    });
+  });
+
+  // Botón rápido "Gestionar" subcategorías desde la barra
+  const btnQuickManageCats = document.querySelector('#btnQuickManageCats');
+  if (btnQuickManageCats) {
+    btnQuickManageCats.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.isManageCategoriesModalOpen = true;
+      state.newCategoryNameInput = '';
+      state.editingCategoryId = null;
+      render();
+    });
+  }
 
   // Botón "Revisar cuentas" desde la Home
   const goToNotBackBtn = document.querySelector('#goToNotBackBtn');
@@ -1454,6 +1511,7 @@ function attachListeners() {
       render();
     });
   }
+
 
   // Acciones de Sugerencias
   document.querySelectorAll('[data-sug-action]').forEach(btn => {

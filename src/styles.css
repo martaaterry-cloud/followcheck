@@ -696,25 +696,111 @@ input:-webkit-autofill:active {
   text-align: center;
 }
 
-/* Barra de Filtros de Categorías (Pills con scroll horizontal) */
+/* Selector de Grupos Principales (Nivel 1 Tabs) */
+.filter-group {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin: 12px 0 12px;
+  background: var(--panel);
+  padding: 4px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  position: relative;
+  z-index: 5;
+}
+.filter-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  padding: 8px 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s ease;
+  line-height: 1.2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  touch-action: manipulation;
+  user-select: none;
+  min-height: 44px;
+}
+.filter-btn:hover {
+  color: var(--text);
+  background: var(--panel2);
+}
+.filter-btn.active {
+  background: var(--panel2);
+  border-color: var(--border-focus);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+.filter-btn-count {
+  font-size: 10px;
+  opacity: 0.8;
+  font-weight: 500;
+}
+
+/* Subcategorías de Relevantes (Nivel 2) */
+.subcategories-section {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 10px 6px;
+  margin-bottom: 14px;
+}
+.subcategories-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+.btn-text-action {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-decoration: underline;
+}
+.btn-text-action:hover {
+  color: #fff;
+}
+
+/* Barra de Filtros de Subcategorías (Pills con scroll horizontal) */
 .category-pills-bar {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   overflow-x: auto;
   padding-bottom: 4px;
-  margin-bottom: 12px;
   scrollbar-width: none;
   -ms-overflow-style: none;
+  -webkit-overflow-scrolling: touch;
 }
 .category-pills-bar::-webkit-scrollbar {
   display: none;
 }
 .category-pill {
-  background: var(--panel);
+  background: var(--panel2);
   border: 1px solid var(--border);
   color: var(--text-muted);
   border-radius: 999px;
-  padding: 5px 12px;
+  padding: 6px 12px;
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -724,22 +810,46 @@ input:-webkit-autofill:active {
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+  touch-action: manipulation;
+  user-select: none;
 }
 .category-pill:hover {
-  background: var(--panel2);
+  background: var(--panel3);
   color: var(--text);
+  border-color: var(--border-focus);
 }
 .category-pill.active {
-  background: var(--panel3);
-  border-color: var(--border-focus);
+  background: var(--accent);
+  border-color: var(--accent);
   color: #fff;
+  font-weight: 700;
 }
 .category-pill .pill-count {
   font-size: 10px;
-  opacity: 0.8;
-  background: rgba(255, 255, 255, 0.08);
+  opacity: 0.85;
+  background: rgba(0, 0, 0, 0.25);
   padding: 1px 6px;
   border-radius: 999px;
+}
+
+/* Botón Organizar en cada Fila Relevante */
+.btn-organize {
+  background: var(--panel2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 11px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  touch-action: manipulation;
+}
+.btn-organize:hover {
+  background: var(--panel3);
+  color: #fff;
+  border-color: var(--border-focus);
 }
 
 /* Badges de Categoría en Cuentas y Actividad */
@@ -759,6 +869,12 @@ input:-webkit-autofill:active {
   border-radius: 4px;
   letter-spacing: 0.1px;
 }
+.account-category-tag.uncat-tag {
+  background: rgba(255, 170, 0, 0.1);
+  color: #ffaa00;
+  border-color: rgba(255, 170, 0, 0.3);
+}
+
 
 /* Modal Organizar y Gestionar Categorías */
 .category-select-list {
