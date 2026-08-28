@@ -42,7 +42,7 @@ import { loadExportState, recordExportRequested, recordSuccessfulImport, isExpor
 import {
   reconcilePreferences, reconcileCategoriesAndMemberships, deduplicateActivity,
   hasPendingLocalDataToMigrate, isLocalDataMigrated, markLocalDataMigrated, dismissMigrationPrompt,
-  knownAccountToPreferenceRow
+  knownAccountToPreferenceRow, preferenceRowToKnownAccount
 } from './sync.js';
 
 
@@ -96,6 +96,8 @@ const state = {
   syncError: '',
   lastSyncAt: localStorage.getItem('fc_last_sync_at') || null,
   showMigrationPrompt: false,
+  showPullConfirmModal: false,
+
 
 
   // Modal de actualización guiada
@@ -679,6 +681,118 @@ async function syncWithCloud(silent = false) {
   }
 }
 
+async function pullFromCloud() {
+  if (!AUTH_ENABLED || !supabaseReady() || !state.user) return;
+
+  try {
+    state.syncStatus = 'syncing';
+    state.syncError = '';
+    render();
+
+    const userId = state.user.id;
+    const errors = [];
+
+    // 1. Descargar Snapshot remoto
+    let remoteSnapshot = null;
+    try {
+      remoteSnapshot = await getLatestSnapshot();
+      if (remoteSnapshot) {
+        state.snapshot = remoteSnapshot;
+        saveLocalSnapshot(remoteSnapshot);
+      }
+    } catch (err) {
+      console.warn('[pull] snapshot error:', err);
+      errors.push(`Snapshots: ${err.message}`);
+    }
+
+    // 2. Descargar Activity remota
+    let remoteActivity = [];
+    try {
+      remoteActivity = await getActivity();
+      state.activity = remoteActivity || [];
+      saveLocalActivity(state.activity);
+    } catch (err) {
+      console.warn('[pull] activity error:', err);
+      errors.push(`Actividad: ${err.message}`);
+    }
+
+    // 3. Descargar Categorías y Memberships remotas
+    let remoteCats = [];
+    let remoteMemberships = {};
+    try {
+      remoteCats = await getRemoteCategories(userId);
+      remoteMemberships = await getRemoteCategoryMemberships(userId);
+
+      const validCategoryIds = new Set((remoteCats || []).map(c => c.id));
+      const cleanMemberships = {};
+
+      for (const [user, catIds] of Object.entries(remoteMemberships || {})) {
+        const normUser = user.toLowerCase().trim();
+        const validIds = (catIds || []).filter(id => validCategoryIds.has(id));
+        if ((catIds || []).length !== validIds.length) {
+          errors.push('Hay asignaciones de categorías inconsistentes en la nube.');
+        }
+        cleanMemberships[normUser] = validIds;
+      }
+
+      state.categories = remoteCats || [];
+      saveLocalCategories(state.categories);
+
+      state.categoryMemberships = cleanMemberships;
+      saveLocalCategoryMemberships(state.categoryMemberships);
+    } catch (err) {
+      console.warn('[pull] categories/memberships error:', err);
+      errors.push(`Categorías: ${err.message}`);
+    }
+
+    // 4. Descargar Account Preferences remotas
+    let remotePrefs = [];
+    try {
+      remotePrefs = await getRemotePreferences(userId);
+      const newKnownAccounts = {};
+      for (const row of remotePrefs || []) {
+        const normUser = String(row.username).toLowerCase().trim();
+        newKnownAccounts[normUser] = preferenceRowToKnownAccount(row);
+      }
+
+      state.knownAccounts = newKnownAccounts;
+      saveLocalKnownAccounts(newKnownAccounts);
+    } catch (err) {
+      console.warn('[pull] preferences error:', err);
+      errors.push(`Preferencias: ${err.message}`);
+    }
+
+    // 5. Descargar Perfil de Usuario remoto
+    let remoteProf = null;
+    try {
+      remoteProf = await getRemoteProfile(userId);
+      state.profile = remoteProf || { instagramUsername: '', displayName: '' };
+      saveLocalProfile(state.profile);
+    } catch (err) {
+      console.warn('[pull] profile error:', err);
+      errors.push(`Perfil: ${err.message}`);
+    }
+
+    if (errors.length > 0) {
+      state.syncStatus = 'error';
+      state.syncError = 'No se han podido cargar todos los datos de la nube: ' + errors.join('; ');
+    } else {
+      const now = new Date().toISOString();
+      state.lastSyncAt = now;
+      localStorage.setItem('fc_last_sync_at', now);
+      state.syncStatus = 'synced';
+      state.syncError = '';
+    }
+  } catch (err) {
+    console.warn('[pull] fatal error:', err);
+    state.syncStatus = 'error';
+    state.syncError = err.message || 'Error desconocido al recoger datos';
+  } finally {
+    render();
+  }
+}
+
+
 
 
 let isAuthSyncing = false;
@@ -746,6 +860,29 @@ function renderMigrationModal() {
     </div>
   `;
 }
+
+function renderPullConfirmModal() {
+  if (!state.showPullConfirmModal) return '';
+
+  return `
+    <div class="modal-backdrop" id="pullConfirmModalBackdrop">
+      <div class="modal-sheet">
+        <div class="modal-header">
+          <h3 class="modal-title">¿Actualizar este dispositivo con los datos de la nube?</h3>
+        </div>
+        <p class="sub" style="margin-top: 0; line-height: 1.5;">
+          Los datos locales de FollowCheck se sustituirán por la copia guardada en Supabase. Los datos de la nube no se modificarán.
+        </p>
+
+        <div style="margin: 20px 0 10px; display: flex; flex-direction: column; gap: 8px;">
+          <button id="btnConfirmPull" class="primary">Recoger datos</button>
+          <button id="btnCancelPull" class="ghost">Cancelar</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 
 function renderAccountPopover(u, group, acc) {
   if (state.activeMenuUser !== u) return '';
@@ -1532,12 +1669,19 @@ function renderApp() {
                   ${esc(state.syncError)}
                 </div>
               ` : ''}
-              <div style="margin-top: 12px;">
+              <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px;">
                 <button class="secondary" id="syncNowBtn" style="width: 100%;" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
                   ${state.syncStatus === 'syncing' ? 'Sincronizando…' : 'Sincronizar ahora'}
                 </button>
+                <button class="secondary" id="pullFromCloudBtn" style="width: 100%; background: rgba(255,255,255,0.06);" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
+                  Recoger datos de la nube
+                </button>
+                <div style="font-size: 11px; color: var(--text-secondary); text-align: center; margin-top: 2px;">
+                  Descarga la copia guardada en Supabase y actualiza este dispositivo.
+                </div>
               </div>
             </div>
+
           ` : ''}
 
 
@@ -1594,7 +1738,9 @@ function renderApp() {
       <!-- MODALES -->
       ${renderUpdateModal()}
       ${renderMigrationModal()}
+      ${renderPullConfirmModal()}
       ${renderOrganizeModal()}
+
       ${renderManageCategoriesModal()}
       ${renderDeleteConfirmModal()}
 
@@ -2124,6 +2270,31 @@ function attachListeners() {
       await syncWithCloud(false);
     });
   }
+
+  const pullFromCloudBtn = document.querySelector('#pullFromCloudBtn');
+  if (pullFromCloudBtn) {
+    pullFromCloudBtn.addEventListener('click', () => {
+      state.showPullConfirmModal = true;
+      render();
+    });
+  }
+
+  const btnConfirmPull = document.querySelector('#btnConfirmPull');
+  if (btnConfirmPull) {
+    btnConfirmPull.addEventListener('click', async () => {
+      state.showPullConfirmModal = false;
+      await pullFromCloud();
+    });
+  }
+
+  const btnCancelPull = document.querySelector('#btnCancelPull');
+  if (btnCancelPull) {
+    btnCancelPull.addEventListener('click', () => {
+      state.showPullConfirmModal = false;
+      render();
+    });
+  }
+
 
   // Botones de Migración Local
   const btnConfirmMigration = document.querySelector('#btnConfirmMigration');

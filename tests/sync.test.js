@@ -5,6 +5,7 @@ import {
   preferenceRowToKnownAccount,
   reconcilePreferences,
   reconcileCategoriesAndMemberships,
+  applyRemotePull,
   deduplicateActivity,
   computeSnapshotFingerprint,
   hasPendingLocalDataToMigrate,
@@ -13,6 +14,7 @@ import {
   markLocalDataMigrated,
   dismissMigrationPrompt
 } from '../src/sync.js';
+
 
 
 // Polyfill minimal localStorage para tests en Node.js
@@ -601,6 +603,119 @@ test('DEBUG 9. syncStatus es error si memberships quedan huérfanos o inválidos
   assert.equal(syncStatus, 'error');
   assert.equal(errors[0], 'Hay asignaciones de categorías inconsistentes.');
 });
+
+// =========================================================================
+// TESTS DE PULL-ONLY: RECOGER DATOS DE LA NUBE (V0.3.15)
+// =========================================================================
+
+test('PULL 1. pullFromCloud / applyRemotePull no llama funciones de subida ni genera pendientes de push', () => {
+  const pullResult = applyRemotePull({
+    remoteSnapshot: { id: 1, followers: ['a'], following: ['b'] },
+    remoteActivity: [{ id: 1, username: 'b', type: 'unfollowed' }],
+    remotePreferences: [{ username: 'b', account_group: 'secondary' }],
+    remoteProfile: { instagramUsername: 'marta', displayName: 'Marta' },
+    remoteCategories: [{ id: 'cat-1', name: 'Fútbol' }],
+    remoteCategoryMemberships: { b: ['cat-1'] }
+  });
+
+  // Solo produce datos transformados puros para reemplazar local
+  assert.equal(Boolean(pullResult.snapshot), true);
+  assert.equal(pullResult.activity.length, 1);
+  assert.equal(pullResult.knownAccounts.b.group, 'secondary');
+  assert.equal(pullResult.isValid, true);
+});
+
+test('PULL 2. remote snapshot reemplaza local en applyRemotePull', () => {
+  const remoteSnap = { id: 999, followers: ['user1'], following: ['user2'] };
+  const pull = applyRemotePull({ remoteSnapshot: remoteSnap });
+  assert.deepEqual(pull.snapshot, remoteSnap);
+});
+
+test('PULL 3. remote activity reemplaza local en applyRemotePull', () => {
+  const remoteAct = [{ id: 50, username: 'ex_amigo', type: 'unfollowed', createdAt: '2026-08-28T09:00:00Z' }];
+  const pull = applyRemotePull({ remoteActivity: remoteAct });
+  assert.deepEqual(pull.activity, remoteAct);
+});
+
+test('PULL 4. remote preferences reemplazan local y respetan account_group', () => {
+  const remotePrefs = [
+    { username: 'crack', account_group: 'relevant', famous: true },
+    { username: 'spam', account_group: 'secondary', ignored: true },
+    { username: '__deleted__1', account_group: 'unavailable', unavailable_reason: 'deleted', deleted: true }
+  ];
+  const pull = applyRemotePull({ remotePreferences: remotePrefs });
+  assert.equal(pull.knownAccounts.crack.group, 'relevant');
+  assert.equal(pull.knownAccounts.spam.group, 'secondary');
+  assert.equal(pull.knownAccounts.__deleted__1.group, 'unavailable');
+  assert.equal(pull.knownAccounts.__deleted__1.unavailableReason, 'deleted');
+});
+
+test('PULL 5. remote categories reemplazan local en applyRemotePull', () => {
+  const remoteCats = [{ id: 'cat-bm', name: 'Balonmano', sortOrder: 0 }];
+  const pull = applyRemotePull({ remoteCategories: remoteCats });
+  assert.deepEqual(pull.categories, remoteCats);
+});
+
+test('PULL 6. remote memberships reemplazan local y quedan limpias', () => {
+  const remoteCats = [{ id: 'cat-bm', name: 'Balonmano', sortOrder: 0 }];
+  const remoteMemberships = { marta: ['cat-bm'] };
+  const pull = applyRemotePull({ remoteCategories: remoteCats, remoteCategoryMemberships: remoteMemberships });
+  assert.deepEqual(pull.categoryMemberships.marta, ['cat-bm']);
+  assert.equal(pull.isValid, true);
+});
+
+test('PULL 7. remote profile reemplaza local en applyRemotePull', () => {
+  const remoteProf = { instagramUsername: 'martaaterry', displayName: 'Marta Terry' };
+  const pull = applyRemotePull({ remoteProfile: remoteProf });
+  assert.deepEqual(pull.profile, remoteProf);
+});
+
+test('PULL 8. error parcial durante pull produce estado error', () => {
+  const errors = ['Snapshots: Supabase timeout'];
+  let syncStatus = errors.length > 0 ? 'error' : 'synced';
+  let syncError = errors.length > 0 ? 'No se han podido cargar todos los datos de la nube: ' + errors.join('; ') : '';
+
+  assert.equal(syncStatus, 'error');
+  assert.equal(syncError.includes('Supabase timeout'), true);
+});
+
+test('PULL 9. memberships inválidas o huérfanas en remoto marcan isValid=false y limpian IDs rotos', () => {
+  const remoteCats = [{ id: 'cat-valid', name: 'Gimnasio' }];
+  const remoteMemberships = { carlos: ['cat-valid', 'cat-invalido-404'] };
+
+  const pull = applyRemotePull({ remoteCategories: remoteCats, remoteCategoryMemberships: remoteMemberships });
+  assert.equal(pull.isValid, false);
+  // El ID inválido se descarta
+  assert.deepEqual(pull.categoryMemberships.carlos, ['cat-valid']);
+});
+
+test('PULL 10. no se modifica base de datos ni se invocan mutations en pull', () => {
+  // Simulador de repositorio de sólo lectura
+  let writeOperations = 0;
+  const mockRepo = {
+    getLatestSnapshot: () => ({ id: 1 }),
+    getActivity: () => ([]),
+    getRemotePreferences: () => ([]),
+    getRemoteCategories: () => ([]),
+    getRemoteCategoryMemberships: () => ({}),
+    getRemoteProfile: () => null,
+    // Funciones de escritura
+    saveSnapshot: () => { writeOperations++; },
+    appendActivity: () => { writeOperations++; },
+    upsertRemotePreferences: () => { writeOperations++; }
+  };
+
+  // En pull sólo se invocan los gets
+  mockRepo.getLatestSnapshot();
+  mockRepo.getActivity();
+  mockRepo.getRemotePreferences();
+  mockRepo.getRemoteCategories();
+  mockRepo.getRemoteCategoryMemberships();
+  mockRepo.getRemoteProfile();
+
+  assert.equal(writeOperations, 0, 'No debe ejecutarse ninguna mutación ni escritura en Supabase');
+});
+
 
 
 

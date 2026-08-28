@@ -332,3 +332,43 @@ export function deduplicateActivity(localActivity = [], remoteActivity = []) {
   return combined.slice(0, 500);
 }
 
+export function applyRemotePull({
+
+  remoteSnapshot,
+  remoteActivity,
+  remotePreferences,
+  remoteProfile,
+  remoteCategories,
+  remoteCategoryMemberships
+}) {
+  const validCategoryIds = new Set((remoteCategories || []).map(c => c.id));
+  const cleanMemberships = {};
+  let hasOrphanIds = false;
+
+  for (const [user, catIds] of Object.entries(remoteCategoryMemberships || {})) {
+    const normUser = user.toLowerCase().trim();
+    const validIds = (catIds || []).filter(id => validCategoryIds.has(id));
+    if ((catIds || []).length !== validIds.length) {
+      hasOrphanIds = true;
+    }
+    cleanMemberships[normUser] = validIds;
+  }
+
+  const knownAccounts = {};
+  for (const row of remotePreferences || []) {
+    const normUser = String(row.username).toLowerCase().trim();
+    knownAccounts[normUser] = preferenceRowToKnownAccount(row);
+  }
+
+  return {
+    snapshot: remoteSnapshot || null,
+    activity: remoteActivity || [],
+    knownAccounts,
+    profile: remoteProfile || { instagramUsername: '', displayName: '' },
+    categories: remoteCategories || [],
+    categoryMemberships: cleanMemberships,
+    isValid: !hasOrphanIds
+  };
+}
+
+
