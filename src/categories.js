@@ -8,12 +8,21 @@ export const DEFAULT_CATEGORY_NAMES = [
 ];
 
 
-function generateId() {
+export function generateId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
+    try {
+      return crypto.randomUUID();
+    } catch {
+      // fallback
+    }
   }
-  return 'cat_' + Math.random().toString(36).slice(2, 11) + Date.now().toString(36);
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
 }
+
 
 export function initDefaultCategories(existingCategories = []) {
   if (Array.isArray(existingCategories) && existingCategories.length > 0) {

@@ -535,12 +535,13 @@ async function syncWithCloud(silent = false) {
     const errors = [];
 
     // 1. Sincronizar Snapshot
+    let remoteSnapshot = null;
     try {
-      const remoteSnapshot = await getLatestSnapshot();
-      if (remoteSnapshot) {
+      remoteSnapshot = await getLatestSnapshot();
+      if (remoteSnapshot && Array.isArray(remoteSnapshot.followers) && remoteSnapshot.followers.length > 0) {
         state.snapshot = remoteSnapshot;
         saveLocalSnapshot(remoteSnapshot);
-      } else if (state.snapshot && state.snapshot.followers && state.snapshot.followers.length > 0) {
+      } else if (state.snapshot && Array.isArray(state.snapshot.followers) && state.snapshot.followers.length > 0) {
         await saveSnapshot(state.snapshot);
       }
     } catch (err) {
@@ -549,18 +550,98 @@ async function syncWithCloud(silent = false) {
     }
 
     // 2. Sincronizar Activity
+    let remoteActivity = [];
     try {
-      const remoteActivity = await getActivity();
-      state.activity = deduplicateActivity(state.activity, remoteActivity);
-      saveLocalActivity(state.activity);
+      remoteActivity = await getActivity();
+
+      // Si tenemos eventos locales que no están en remoto, subirlos
+      const remoteKeySet = new Set((remoteActivity || []).map(r => `${r.username}:${r.type}:${r.createdAt}`));
+      const pendingLocalToUpload = (state.activity || []).filter(loc => !remoteKeySet.has(`${loc.username}:${loc.type}:${loc.createdAt}`));
+
+      if (pendingLocalToUpload.length > 0) {
+        await appendActivity(pendingLocalToUpload);
+        remoteActivity = await getActivity();
+      }
+
+      const mergedActivity = deduplicateActivity(state.activity, remoteActivity);
+      state.activity = mergedActivity;
+      saveLocalActivity(mergedActivity);
     } catch (err) {
       console.warn('[sync] activity error:', err);
       errors.push(`Actividad: ${err.message}`);
     }
 
-    // 3. Sincronizar Account Preferences (knownAccounts)
+    // 3. Sincronizar Categorías
+    let remoteCats = [];
     try {
-      const remotePrefs = await getRemotePreferences(userId);
+      remoteCats = await getRemoteCategories(userId);
+      const localCats = state.categories || [];
+
+      if (remoteCats && remoteCats.length > 0) {
+        const remoteNameMap = new Map(remoteCats.map(c => [c.name.toLowerCase().trim(), c]));
+        const pendingUploadCats = [];
+
+        for (const loc of localCats) {
+          const match = remoteNameMap.get(loc.name.toLowerCase().trim());
+          if (!match) {
+            pendingUploadCats.push(loc);
+          }
+        }
+
+        if (pendingUploadCats.length > 0) {
+          await saveRemoteCategories(userId, pendingUploadCats);
+          remoteCats = await getRemoteCategories(userId);
+        }
+
+        state.categories = remoteCats;
+        saveLocalCategories(remoteCats);
+      } else if (localCats && localCats.length > 0) {
+        await saveRemoteCategories(userId, localCats);
+        state.categories = localCats;
+        saveLocalCategories(localCats);
+      }
+    } catch (err) {
+      console.warn('[sync] categories error:', err);
+      errors.push(`Categorías: ${err.message}`);
+    }
+
+    // 4. Sincronizar Memberships
+    let remoteMemberships = {};
+    try {
+      remoteMemberships = await getRemoteCategoryMemberships(userId);
+      const localMemberships = state.categoryMemberships || {};
+
+      const mergedMemberships = { ...remoteMemberships };
+      const pendingUploadMemberships = [];
+
+      for (const [user, catIds] of Object.entries(localMemberships)) {
+        if (!mergedMemberships[user]) {
+          mergedMemberships[user] = [...catIds];
+          pendingUploadMemberships.push({ user, catIds });
+        } else {
+          const set = new Set([...mergedMemberships[user], ...catIds]);
+          mergedMemberships[user] = Array.from(set);
+          if (mergedMemberships[user].length > (remoteMemberships[user]?.length || 0)) {
+            pendingUploadMemberships.push({ user, catIds: mergedMemberships[user] });
+          }
+        }
+      }
+
+      for (const item of pendingUploadMemberships) {
+        await saveRemoteAccountCategories(userId, item.user, item.catIds);
+      }
+
+      state.categoryMemberships = mergedMemberships;
+      saveLocalCategoryMemberships(mergedMemberships);
+    } catch (err) {
+      console.warn('[sync] memberships error:', err);
+      errors.push(`Asignaciones: ${err.message}`);
+    }
+
+    // 5. Sincronizar Account Preferences (knownAccounts)
+    let remotePrefs = [];
+    try {
+      remotePrefs = await getRemotePreferences(userId);
       const { mergedKnownAccounts, pendingPushRows } = reconcilePreferences(state.knownAccounts, remotePrefs, userId);
 
       state.knownAccounts = mergedKnownAccounts;
@@ -574,9 +655,10 @@ async function syncWithCloud(silent = false) {
       errors.push(`Preferencias: ${err.message}`);
     }
 
-    // 4. Sincronizar Perfil de Usuario
+    // 6. Sincronizar Perfil de Usuario
+    let remoteProf = null;
     try {
-      const remoteProf = await getRemoteProfile(userId);
+      remoteProf = await getRemoteProfile(userId);
       if (remoteProf && (remoteProf.instagramUsername || remoteProf.displayName)) {
         state.profile = remoteProf;
         saveLocalProfile(remoteProf);
@@ -585,40 +667,24 @@ async function syncWithCloud(silent = false) {
       }
     } catch (err) {
       console.warn('[sync] profile error:', err);
+      errors.push(`Perfil: ${err.message}`);
     }
 
-    // 5. Sincronizar Categorías
-    try {
-      const remoteCats = await getRemoteCategories(userId);
-      if (remoteCats && remoteCats.length > 0) {
-        state.categories = remoteCats;
-        saveLocalCategories(remoteCats);
-      } else if (state.categories && state.categories.length > 0) {
-        await saveRemoteCategories(userId, state.categories);
-      }
-    } catch (err) {
-      console.warn('[sync] categories error:', err);
-    }
-
-    // 6. Sincronizar Memberships
-    try {
-      const remoteMemberships = await getRemoteCategoryMemberships(userId);
-      if (remoteMemberships && Object.keys(remoteMemberships).length > 0) {
-        state.categoryMemberships = remoteMemberships;
-        saveLocalCategoryMemberships(remoteMemberships);
-      }
-    } catch (err) {
-      console.warn('[sync] memberships error:', err);
-    }
-
-    const now = new Date().toISOString();
-    state.lastSyncAt = now;
-    localStorage.setItem('fc_last_sync_at', now);
+    // Logging estructurado
+    console.log(`[sync] snapshots local=${state.snapshot ? 1 : 0} remote=${remoteSnapshot ? 1 : 0} merged=${state.snapshot ? 1 : 0}`);
+    console.log(`[sync] activity local=${(state.activity || []).length} remote=${(remoteActivity || []).length} merged=${(state.activity || []).length}`);
+    console.log(`[sync] preferences local=${Object.keys(state.knownAccounts || {}).length} remote=${(remotePrefs || []).length} merged=${Object.keys(state.knownAccounts || {}).length}`);
+    console.log(`[sync] categories local=${(state.categories || []).length} remote=${(remoteCats || []).length} merged=${(state.categories || []).length}`);
+    console.log(`[sync] memberships local=${Object.keys(state.categoryMemberships || {}).length} remote=${Object.keys(remoteMemberships || {}).length} merged=${Object.keys(state.categoryMemberships || {}).length}`);
+    console.log(`[sync] profile local=${state.profile?.instagramUsername ? 'yes' : 'no'} remote=${remoteProf?.instagramUsername ? 'yes' : 'no'}`);
 
     if (errors.length > 0) {
       state.syncStatus = 'error';
-      state.syncError = errors.join('; ');
+      state.syncError = 'No se han podido sincronizar algunos datos: ' + errors.join('; ');
     } else {
+      const now = new Date().toISOString();
+      state.lastSyncAt = now;
+      localStorage.setItem('fc_last_sync_at', now);
       state.syncStatus = 'synced';
       state.syncError = '';
     }
@@ -630,6 +696,7 @@ async function syncWithCloud(silent = false) {
     render();
   }
 }
+
 
 
 let isAuthSyncing = false;
@@ -2383,14 +2450,17 @@ async function boot() {
     state.snapshot = loadLocalSnapshot();
     state.activity = loadLocalActivity();
     state.profile = loadLocalProfile();
-    state.categories = initDefaultCategories(loadLocalCategories());
+    const storedCategories = loadLocalCategories();
+    state.categories = storedCategories || [];
     state.categoryMemberships = loadLocalCategoryMemberships();
     state.exportState = loadExportState();
 
-    // Guardar categorías por defecto si no existían
-    if (!loadLocalCategories()) {
+    // Si Auth no está activo y no hay categorías guardadas, inicializar por defecto
+    if ((!AUTH_ENABLED || !supabaseReady()) && (!storedCategories || storedCategories.length === 0)) {
+      state.categories = initDefaultCategories([]);
       saveLocalCategories(state.categories);
     }
+
 
     // Inicializar ciclo de vida de PWA
     initPwa(({ status, updateAvailable }) => {

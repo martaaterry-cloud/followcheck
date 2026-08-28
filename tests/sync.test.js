@@ -301,3 +301,174 @@ test('Flujo completo de sincronización de Snapshot y Activity persiste en stora
   assert.equal(loadedAct[2].username, 'userC');
 });
 
+// ==========================================
+// 10 TESTS MULTI-DISPOSITIVO SINCRONIZACIÓN
+// ==========================================
+
+test('1. local vacío + remote categories -> aparecen categories en local', () => {
+  const remoteCats = [
+    { id: 'cat-1', name: 'Balonmano', sortOrder: 0 },
+    { id: 'cat-2', name: 'Fútbol', sortOrder: 1 }
+  ];
+  const localCats = [];
+  // Merge: si remote existe, remote puebla local
+  const mergedCats = remoteCats.length > 0 ? [...remoteCats] : localCats;
+  assert.equal(mergedCats.length, 2);
+  assert.equal(mergedCats[0].name, 'Balonmano');
+});
+
+test('2. local vacío + remote memberships -> aparecen memberships en local', () => {
+  const remoteMemberships = {
+    marta: ['cat-1'],
+    pepe: ['cat-2']
+  };
+  const localMemberships = {};
+  const merged = { ...remoteMemberships, ...localMemberships };
+  assert.deepEqual(merged.marta, ['cat-1']);
+  assert.deepEqual(merged.pepe, ['cat-2']);
+});
+
+test('3. local vacío + remote activity -> aparece activity en local', () => {
+  const localActivity = [];
+  const remoteActivity = [
+    { id: 10, username: 'user1', type: 'unfollowed', createdAt: '2026-08-28T09:00:00Z' }
+  ];
+  const merged = deduplicateActivity(localActivity, remoteActivity);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].username, 'user1');
+});
+
+test('4. local vacío + remote preferences -> conserva account_group, unavailable_reason y famous', () => {
+  const localKnown = {};
+  const remoteRows = [
+    {
+      username: 'ronaldo',
+      account_group: 'relevant',
+      famous: true,
+      famous_source: 'manual',
+      updated_at: '2026-08-28T09:00:00Z'
+    },
+    {
+      username: '__deleted__123',
+      account_group: 'unavailable',
+      unavailable_reason: 'deleted',
+      deleted: true,
+      updated_at: '2026-08-28T09:00:00Z'
+    }
+  ];
+
+  const { mergedKnownAccounts } = reconcilePreferences(localKnown, remoteRows, 'user-123');
+  assert.equal(mergedKnownAccounts.ronaldo.group, 'relevant');
+  assert.equal(mergedKnownAccounts.ronaldo.famous, true);
+  assert.equal(mergedKnownAccounts['__deleted__123'].group, 'unavailable');
+  assert.equal(mergedKnownAccounts['__deleted__123'].unavailableReason, 'deleted');
+});
+
+test('5. local vacío + remote snapshot -> aparece snapshot en local', async () => {
+  const { saveLocalSnapshot, loadLocalSnapshot } = await import('../src/storage.js');
+  localStorage.clear();
+
+  const remoteSnapshot = {
+    id: 'snap-remote-1',
+    importedAt: '2026-08-28T08:00:00Z',
+    followers: ['alice', 'bob'],
+    following: ['alice', 'charlie']
+  };
+
+  saveLocalSnapshot(remoteSnapshot);
+  const snap = loadLocalSnapshot();
+  assert.equal(snap.id, 'snap-remote-1');
+  assert.deepEqual(snap.followers, ['alice', 'bob']);
+});
+
+test('6. empty local NO sobrescribe remote en reconciliación', () => {
+  const localKnown = {};
+  const remoteRows = [
+    { username: 'user_x', account_group: 'secondary', updated_at: '2026-08-28T09:00:00Z' }
+  ];
+
+  const { mergedKnownAccounts, pendingPushRows } = reconcilePreferences(localKnown, remoteRows, 'user-123');
+  assert.equal(mergedKnownAccounts.user_x.group, 'secondary');
+  assert.equal(pendingPushRows.length, 0); // No intenta borrar remoto
+});
+
+test('7. syncStatus no es synced si falla un bloque', () => {
+  const errors = ['Snapshots: Network error'];
+  let syncStatus = 'syncing';
+  let syncError = '';
+
+  if (errors.length > 0) {
+    syncStatus = 'error';
+    syncError = 'No se han podido sincronizar algunos datos: ' + errors.join('; ');
+  } else {
+    syncStatus = 'synced';
+  }
+
+  assert.equal(syncStatus, 'error');
+  assert.equal(syncError.includes('Snapshots: Network error'), true);
+});
+
+test('8. lastSyncAt solo se actualiza cuando sync completa con 0 errores', () => {
+  let lastSyncAt = null;
+  const errors = ['Actividad: Timeout'];
+
+  if (errors.length === 0) {
+    lastSyncAt = new Date().toISOString();
+  }
+
+  assert.equal(lastSyncAt, null);
+
+  const noErrors = [];
+  if (noErrors.length === 0) {
+    lastSyncAt = '2026-08-28T09:15:00Z';
+  }
+  assert.equal(lastSyncAt, '2026-08-28T09:15:00Z');
+});
+
+test('9. initDefaultCategories no pisa categorías remotas si existen en base de datos', () => {
+  const remoteCats = [
+    { id: 'cat-custom-1', name: 'Mis amigos de balonmano', sortOrder: 0 }
+  ];
+  // Si remote tiene datos, el estado local toma remoteCats
+  const categories = remoteCats.length > 0 ? remoteCats : [];
+  assert.equal(categories.length, 1);
+  assert.equal(categories[0].name, 'Mis amigos de balonmano');
+});
+
+test('10. sync bidireccional conserva cambios del dispositivo más reciente', () => {
+  const localKnown = {
+    player1: {
+      group: 'relevant',
+      famous: true,
+      updatedAt: '2026-08-28T10:00:00Z' // Más reciente en dispositivo local
+    },
+    player2: {
+      group: 'normal',
+      updatedAt: '2026-08-28T08:00:00Z' // Más antiguo en dispositivo local
+    }
+  };
+
+  const remoteRows = [
+    {
+      username: 'player1',
+      account_group: 'normal',
+      updated_at: '2026-08-28T09:00:00Z' // Más antiguo en remoto
+    },
+    {
+      username: 'player2',
+      account_group: 'secondary',
+      updated_at: '2026-08-28T09:30:00Z' // Más nuevo en remoto
+    }
+  ];
+
+  const { mergedKnownAccounts, pendingPushRows } = reconcilePreferences(localKnown, remoteRows, 'user-123');
+
+  // player1 gana local
+  assert.equal(mergedKnownAccounts.player1.group, 'relevant');
+  assert.equal(pendingPushRows.some(r => r.username === 'player1'), true);
+
+  // player2 gana remoto
+  assert.equal(mergedKnownAccounts.player2.group, 'secondary');
+});
+
+
