@@ -448,7 +448,7 @@ export function createFollowCheckBackupJson({
 }) {
   return {
     followcheck_backup: true,
-    version: appVersion || '0.3.16',
+    version: appVersion || '0.3.17',
     timestamp: new Date().toISOString(),
     data: {
       snapshot: snapshot || null,
@@ -461,6 +461,111 @@ export function createFollowCheckBackupJson({
     }
   };
 }
+
+export function validatePushVerification({
+  localKnownAccounts = {},
+  localCategories = [],
+  localCategoryMemberships = {},
+  remotePreferences = [],
+  remoteCategories = [],
+  remoteMemberships = {}
+}) {
+  const errors = [];
+
+  // 1. Conteo por grupo
+  const localGroupCounts = { normal: 0, relevant: 0, secondary: 0, unavailable: 0 };
+  for (const acc of Object.values(localKnownAccounts || {})) {
+    const g = acc.group || (acc.deleted ? 'unavailable' : (acc.ignored ? 'secondary' : (acc.famous ? 'relevant' : 'normal')));
+    if (localGroupCounts[g] !== undefined) localGroupCounts[g]++;
+  }
+
+  const remoteGroupCounts = { normal: 0, relevant: 0, secondary: 0, unavailable: 0 };
+  for (const row of remotePreferences || []) {
+    const g = row.account_group || (row.deleted ? 'unavailable' : (row.ignored ? 'secondary' : (row.famous ? 'relevant' : 'normal')));
+    if (remoteGroupCounts[g] !== undefined) remoteGroupCounts[g]++;
+  }
+
+  if (localGroupCounts.relevant !== remoteGroupCounts.relevant) {
+    errors.push(`Relevantes no coincide (local=${localGroupCounts.relevant}, remoto=${remoteGroupCounts.relevant})`);
+  }
+  if (localGroupCounts.secondary !== remoteGroupCounts.secondary) {
+    errors.push(`Secundarias no coincide (local=${localGroupCounts.secondary}, remoto=${remoteGroupCounts.secondary})`);
+  }
+  if (localGroupCounts.unavailable !== remoteGroupCounts.unavailable) {
+    errors.push(`No disponibles no coincide (local=${localGroupCounts.unavailable}, remoto=${remoteGroupCounts.unavailable})`);
+  }
+
+  // 2. Conteo de categorías
+  if ((localCategories || []).length !== (remoteCategories || []).length) {
+    errors.push(`Categorías no coincide (local=${(localCategories || []).length}, remoto=${(remoteCategories || []).length})`);
+  }
+
+  // 3. Comparación de Memberships
+  const remoteCatIdToName = new Map((remoteCategories || []).map(c => [c.id, c.name.toLowerCase().trim()]));
+  const localCatIdToName = new Map((localCategories || []).map(c => [c.id, c.name.toLowerCase().trim()]));
+
+  let localMembershipTotal = 0;
+  for (const [user, catIds] of Object.entries(localCategoryMemberships || {})) {
+    const expectedCatNames = (catIds || []).map(id => localCatIdToName.get(id)).filter(Boolean).sort();
+    localMembershipTotal += expectedCatNames.length;
+
+    const actualCatIds = remoteMemberships[user.toLowerCase().trim()] || [];
+    const actualCatNames = actualCatIds.map(id => remoteCatIdToName.get(id)).filter(Boolean).sort();
+
+    if (JSON.stringify(expectedCatNames) !== JSON.stringify(actualCatNames)) {
+      errors.push(`Memberships de "${user}" no coincide (esperado=${expectedCatNames.join(',')}, remoto=${actualCatNames.join(',')})`);
+    }
+  }
+
+  return {
+    success: errors.length === 0,
+    errors,
+    localGroupCounts,
+    remoteGroupCounts,
+    localMembershipTotal
+  };
+}
+
+export function parseAndValidateBackupJson(rawInput) {
+  let parsed = null;
+  try {
+    parsed = typeof rawInput === 'string' ? JSON.parse(rawInput) : rawInput;
+  } catch (err) {
+    return { valid: false, error: 'El archivo no contiene un JSON válido.' };
+  }
+
+  if (!parsed || typeof parsed !== 'object') {
+    return { valid: false, error: 'Formato de copia de seguridad inválido.' };
+  }
+
+  const data = parsed.data || parsed;
+
+  const hasKnownAccounts = typeof data.knownAccounts === 'object' && data.knownAccounts !== null;
+  const hasCategories = Array.isArray(data.categories);
+
+  if (!hasKnownAccounts && !hasCategories && !data.snapshot) {
+    return { valid: false, error: 'El archivo no parece ser una copia de seguridad válida de FollowCheck.' };
+  }
+
+  const str = JSON.stringify(parsed);
+  if (str.includes('access_token') || str.includes('refreshToken')) {
+    return { valid: false, error: 'El archivo contiene información sensible y ha sido rechazado.' };
+  }
+
+  return {
+    valid: true,
+    data: {
+      snapshot: data.snapshot || null,
+      activity: Array.isArray(data.activity) ? deduplicateActivity([], data.activity) : [],
+      knownAccounts: data.knownAccounts || {},
+      categories: Array.isArray(data.categories) ? data.categories : [],
+      categoryMemberships: data.categoryMemberships || {},
+      profile: data.profile || { instagramUsername: '', displayName: '' },
+      exportState: data.exportState || null
+    }
+  };
+}
+
 
 
 

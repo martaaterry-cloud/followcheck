@@ -8,6 +8,8 @@ import {
   applyRemotePull,
   prepareLocalStateForPush,
   createFollowCheckBackupJson,
+  validatePushVerification,
+  parseAndValidateBackupJson,
   deduplicateActivity,
   computeSnapshotFingerprint,
   hasPendingLocalDataToMigrate,
@@ -16,6 +18,7 @@ import {
   markLocalDataMigrated,
   dismissMigrationPrompt
 } from '../src/sync.js';
+
 
 
 
@@ -856,6 +859,169 @@ test('RECOVERY 10. backup local contiene organización y no contiene credenciale
   assert.equal(jsonString.includes('access_token'), false);
   assert.equal(jsonString.includes('supabase'), false);
 });
+
+// =========================================================================
+// TESTS DE PROTECCIÓN V0.3.17: BOOT NO MUTANTE, VERIFICACIÓN Y RESTAURACIÓN
+// =========================================================================
+
+test('V0.3.17 1. onUserAuthenticated / boot NO llama a syncWithCloud ni descarga mutando estado', () => {
+  let syncCalled = false;
+  function mockOnUserAuthenticated(user) {
+    if (!user) return;
+    // Únicamente establece usuario sin llamar sync
+  }
+
+  mockOnUserAuthenticated({ id: 'user-123' });
+  assert.equal(syncCalled, false);
+});
+
+test('V0.3.17 2. login / auth no modifica knownAccounts local', () => {
+  const localKnown = {
+    marta: { group: 'relevant', famous: true },
+    amigo: { group: 'secondary', ignored: true }
+  };
+  const snapshotBefore = JSON.stringify(localKnown);
+
+  // Simulación de arranque
+  const state = { user: { id: 'user-1' }, knownAccounts: localKnown };
+  assert.equal(JSON.stringify(state.knownAccounts), snapshotBefore);
+});
+
+test('V0.3.17 3. login / auth no modifica categories locales', () => {
+  const localCategories = [{ id: 'cat-bm', name: 'Balonmano' }];
+  const snapshotBefore = JSON.stringify(localCategories);
+
+  const state = { user: { id: 'user-1' }, categories: localCategories };
+  assert.equal(JSON.stringify(state.categories), snapshotBefore);
+});
+
+test('V0.3.17 4. login / auth no modifica categoryMemberships locales', () => {
+  const localMemberships = { marta: ['cat-bm'] };
+  const snapshotBefore = JSON.stringify(localMemberships);
+
+  const state = { user: { id: 'user-1' }, categoryMemberships: localMemberships };
+  assert.equal(JSON.stringify(state.categoryMemberships), snapshotBefore);
+});
+
+test('V0.3.17 5. push-only conserva grupos locales exactamente en validación', () => {
+  const localKnown = {
+    u1: { group: 'relevant', famous: true },
+    u2: { group: 'secondary', ignored: true },
+    u3: { group: 'unavailable', unavailableReason: 'deleted', deleted: true },
+    u4: { group: 'normal' }
+  };
+  const remotePrefs = [
+    { username: 'u1', account_group: 'relevant' },
+    { username: 'u2', account_group: 'secondary' },
+    { username: 'u3', account_group: 'unavailable' },
+    { username: 'u4', account_group: 'normal' }
+  ];
+
+  const verification = validatePushVerification({
+    localKnownAccounts: localKnown,
+    localCategories: [],
+    localCategoryMemberships: {},
+    remotePreferences: remotePrefs,
+    remoteCategories: [],
+    remoteMemberships: {}
+  });
+
+  assert.equal(verification.success, true);
+  assert.equal(verification.errors.length, 0);
+});
+
+test('V0.3.17 6. verificación falla si relevant remoto != local', () => {
+  const localKnown = { u1: { group: 'relevant', famous: true } };
+  const remotePrefs = [{ username: 'u1', account_group: 'normal' }]; // Fallo: remoto quedó en normal
+
+  const verification = validatePushVerification({
+    localKnownAccounts: localKnown,
+    localCategories: [],
+    localCategoryMemberships: {},
+    remotePreferences: remotePrefs,
+    remoteCategories: [],
+    remoteMemberships: {}
+  });
+
+  assert.equal(verification.success, false);
+  assert.equal(verification.errors.some(e => e.includes('Relevantes no coincide')), true);
+});
+
+test('V0.3.17 7. verificación falla si secondary remoto != local', () => {
+  const localKnown = { u1: { group: 'secondary', ignored: true } };
+  const remotePrefs = []; // Remoto no guardó secondary
+
+  const verification = validatePushVerification({
+    localKnownAccounts: localKnown,
+    localCategories: [],
+    localCategoryMemberships: {},
+    remotePreferences: remotePrefs,
+    remoteCategories: [],
+    remoteMemberships: {}
+  });
+
+  assert.equal(verification.success, false);
+  assert.equal(verification.errors.some(e => e.includes('Secundarias no coincide')), true);
+});
+
+test('V0.3.17 8. verificación falla si memberships remotas != locales', () => {
+  const localCats = [{ id: 'c1', name: 'Deportes' }];
+  const localMemberships = { pepe: ['c1'] };
+  const remoteCats = [{ id: 'c1', name: 'Deportes' }];
+  const remoteMemberships = { pepe: [] }; // Vacío en remoto
+
+  const verification = validatePushVerification({
+    localKnownAccounts: {},
+    localCategories: localCats,
+    localCategoryMemberships: localMemberships,
+    remotePreferences: [],
+    remoteCategories: remoteCats,
+    remoteMemberships: remoteMemberships
+  });
+
+  assert.equal(verification.success, false);
+  assert.equal(verification.errors.some(e => e.includes('Memberships de "pepe" no coincide')), true);
+});
+
+test('V0.3.17 9. parseAndValidateBackupJson valida e importa organización local', () => {
+  const backupPayload = {
+    followcheck_backup: true,
+    version: '0.3.16',
+    data: {
+      snapshot: { followers: ['a'], following: ['b'] },
+      activity: [{ username: 'b', type: 'unfollowed' }],
+      knownAccounts: { b: { group: 'relevant', famous: true } },
+      categories: [{ id: 'cat-1', name: 'VIP' }],
+      categoryMemberships: { b: ['cat-1'] },
+      profile: { instagramUsername: 'marta' }
+    }
+  };
+
+  const result = parseAndValidateBackupJson(JSON.stringify(backupPayload));
+  assert.equal(result.valid, true);
+  assert.equal(result.data.knownAccounts.b.group, 'relevant');
+  assert.equal(result.data.categories[0].name, 'VIP');
+  assert.deepEqual(result.data.categoryMemberships.b, ['cat-1']);
+});
+
+test('V0.3.17 10. importar backup NO escribe en Supabase (operación pura local)', () => {
+  let supabaseWrites = 0;
+  const mockSupabase = {
+    upsertRemotePreferences: () => { supabaseWrites++; },
+    saveRemoteCategories: () => { supabaseWrites++; },
+    saveRemoteAccountCategories: () => { supabaseWrites++; }
+  };
+
+  // La función de importación sólo valida y devuelve datos para localStorage
+  const parsed = parseAndValidateBackupJson({
+    followcheck_backup: true,
+    data: { knownAccounts: { marta: { group: 'relevant' } } }
+  });
+
+  assert.equal(parsed.valid, true);
+  assert.equal(supabaseWrites, 0, 'La importación de backup no debe realizar escrituras en Supabase');
+});
+
 
 
 

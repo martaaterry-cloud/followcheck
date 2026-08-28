@@ -43,8 +43,10 @@ import {
   reconcilePreferences, reconcileCategoriesAndMemberships, deduplicateActivity,
   hasPendingLocalDataToMigrate, isLocalDataMigrated, markLocalDataMigrated, dismissMigrationPrompt,
   knownAccountToPreferenceRow, preferenceRowToKnownAccount,
-  prepareLocalStateForPush, createFollowCheckBackupJson
+  prepareLocalStateForPush, createFollowCheckBackupJson,
+  validatePushVerification, parseAndValidateBackupJson
 } from './sync.js';
+
 
 
 
@@ -885,18 +887,33 @@ async function pushLocalStateToCloud() {
       }
     }
 
-    // 5. Verificación post-push
+    // 5. Verificación post-push exhaustiva
     if (errors.length === 0) {
       const verifiedPrefs = await getRemotePreferences(userId);
       const verifiedCats = await getRemoteCategories(userId);
-      console.log(`[push-verify] preferences uploaded=${Object.keys(state.knownAccounts).length} in_cloud=${verifiedPrefs.length}`);
-      console.log(`[push-verify] categories in_cloud=${verifiedCats.length}`);
+      const verifiedMemberships = await getRemoteCategoryMemberships(userId);
 
-      const now = new Date().toISOString();
-      state.lastSyncAt = now;
-      localStorage.setItem('fc_last_sync_at', now);
-      state.syncStatus = 'synced';
-      state.syncError = '';
+      const verification = validatePushVerification({
+        localKnownAccounts: state.knownAccounts,
+        localCategories: state.categories,
+        localCategoryMemberships: state.categoryMemberships,
+        remotePreferences: verifiedPrefs,
+        remoteCategories: verifiedCats,
+        remoteMemberships: verifiedMemberships
+      });
+
+      console.log(`[push-verify] status=${verification.success ? 'ok' : 'mismatch'}`, verification);
+
+      if (verification.success) {
+        const now = new Date().toISOString();
+        state.lastSyncAt = now;
+        localStorage.setItem('fc_last_sync_at', now);
+        state.syncStatus = 'synced';
+        state.syncError = '';
+      } else {
+        state.syncStatus = 'error';
+        state.syncError = 'Discrepancia detectada tras la subida: ' + verification.errors.join('; ');
+      }
     } else {
       state.syncStatus = 'error';
       state.syncError = 'No se han podido subir todos los datos: ' + errors.join('; ');
@@ -938,53 +955,60 @@ function exportLocalFollowCheckBackup() {
   }
 }
 
-
-
-
-
-let isAuthSyncing = false;
-
-async function onUserAuthenticated(user) {
-  if (!user || isAuthSyncing) return;
-  isAuthSyncing = true;
-  state.user = user;
-  render();
+async function importLocalFollowCheckBackup(file) {
+  if (!file) return;
 
   try {
-    const remoteSnapshot = await getLatestSnapshot();
-    const remoteActivity = await getActivity();
-    const remotePrefs = await getRemotePreferences(user.id);
+    const text = await file.text();
+    const result = parseAndValidateBackupJson(text);
 
-    console.log('[sync] local snapshots:', state.snapshot ? 1 : 0);
-    console.log('[sync] remote snapshots:', remoteSnapshot ? 1 : 0);
-
-    const isPending = hasPendingLocalDataToMigrate({
-      userId: user.id,
-      localSnapshot: state.snapshot,
-      localActivity: state.activity,
-      localKnownAccounts: state.knownAccounts,
-      remoteSnapshot,
-      remoteActivity,
-      remotePrefs
-    });
-
-    console.log('[sync] migration pending:', isPending);
-
-    if (isPending) {
-      state.showMigrationPrompt = true;
-      render();
-    } else {
-      markLocalDataMigrated(user.id, state.snapshot);
-      console.log('[sync] migration completed for user:', user.id.slice(0, 8));
-      await syncWithCloud(false);
+    if (!result.valid) {
+      alert('Error al importar copia de seguridad: ' + result.error);
+      return;
     }
+
+    const { snapshot, activity, knownAccounts, categories, categoryMemberships, profile, exportState } = result.data;
+
+    state.snapshot = snapshot;
+    saveLocalSnapshot(snapshot);
+
+    state.activity = activity;
+    saveLocalActivity(activity);
+
+    state.knownAccounts = knownAccounts;
+    saveLocalKnownAccounts(knownAccounts);
+
+    state.categories = categories;
+    saveLocalCategories(categories);
+
+    state.categoryMemberships = categoryMemberships;
+    saveLocalCategoryMemberships(categoryMemberships);
+
+    state.profile = profile;
+    saveLocalProfile(profile);
+
+    if (exportState) {
+      state.exportState = exportState;
+    }
+
+    // Al restaurar localmente, NO sube automáticamente a Supabase
+    state.syncStatus = 'idle';
+    state.syncError = '';
+    render();
+
+    alert('Copia de seguridad restaurada correctamente en este dispositivo.\nPuedes revisar tus cuentas y, cuando lo desees, pulsar "Subir este dispositivo a la nube".');
   } catch (err) {
-    console.warn('Error comprobando migración local:', err);
-    await syncWithCloud(false);
-  } finally {
-    isAuthSyncing = false;
+    console.error('Error al procesar archivo de copia de seguridad:', err);
+    alert('No se pudo leer el archivo: ' + err.message);
   }
 }
+
+async function onUserAuthenticated(user) {
+  if (!user) return;
+  state.user = user;
+  render();
+}
+
 
 function renderMigrationModal() {
   if (!state.showMigrationPrompt) return '';
@@ -1828,7 +1852,7 @@ function renderApp() {
               <div class="settings-list">
                 <div class="settings-item">
                   <span class="settings-label">Estado</span>
-                  <span class="settings-value">${state.syncStatus === 'syncing' ? 'Sincronizando…' : (state.syncStatus === 'error' ? 'Error al sincronizar' : 'Sincronizado')}</span>
+                  <span class="settings-value">${state.syncStatus === 'syncing' ? 'Sincronizando…' : (state.syncStatus === 'error' ? 'Error al sincronizar' : (state.lastSyncAt ? 'Sincronizado' : 'Pendiente de sincronizar'))}</span>
                 </div>
                 <div class="settings-item">
                   <span class="settings-label">Última sincronización</span>
@@ -1850,14 +1874,21 @@ function renderApp() {
                 <button class="secondary" id="pullFromCloudBtn" style="width: 100%; background: rgba(255,255,255,0.06);" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
                   Recoger datos de la nube
                 </button>
-                <button class="ghost" id="exportBackupBtn" style="width: 100%; margin-top: 4px; font-size: 13px;">
-                  Exportar copia de seguridad
-                </button>
+                <div style="display: flex; gap: 8px; margin-top: 4px;">
+                  <button class="ghost" id="exportBackupBtn" style="flex: 1; font-size: 12px;">
+                    Exportar copia
+                  </button>
+                  <button class="ghost" id="importBackupBtn" style="flex: 1; font-size: 12px;">
+                    Importar copia
+                  </button>
+                </div>
+                <input type="file" id="backupFileInput" accept=".json,application/json" style="display: none;" />
                 <div style="font-size: 11px; color: var(--text-secondary); text-align: center; margin-top: 2px;">
                   Sincroniza bidireccionalmente o usa un dispositivo como copia maestra.
                 </div>
               </div>
             </div>
+
 
 
           ` : ''}
@@ -2497,6 +2528,22 @@ function attachListeners() {
       exportLocalFollowCheckBackup();
     });
   }
+
+  const importBackupBtn = document.querySelector('#importBackupBtn');
+  const backupFileInput = document.querySelector('#backupFileInput');
+  if (importBackupBtn && backupFileInput) {
+    importBackupBtn.addEventListener('click', () => {
+      backupFileInput.click();
+    });
+    backupFileInput.addEventListener('change', async (e) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        await importLocalFollowCheckBackup(file);
+      }
+      backupFileInput.value = '';
+    });
+  }
+
 
 
 
