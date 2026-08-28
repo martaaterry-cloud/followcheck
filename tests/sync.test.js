@@ -238,3 +238,66 @@ test('Reconciliación y migración repetida es idempotente (0 duplicados)', () =
   assert.equal(Object.keys(secondRun.mergedKnownAccounts).length, 1);
   assert.equal(secondRun.pendingPushRows.length, 0);
 });
+
+test('storage.js exporta todas las funciones canónicas de persistencia local requeridas', async () => {
+  const storage = await import('../src/storage.js');
+  const requiredFunctions = [
+    'loadLocalSnapshot',
+    'saveLocalSnapshot',
+    'loadLocalActivity',
+    'saveLocalActivity',
+    'loadLocalKnownAccounts',
+    'saveLocalKnownAccounts',
+    'loadLocalProfile',
+    'saveLocalProfile',
+    'loadLocalCategories',
+    'saveLocalCategories',
+    'loadLocalCategoryMemberships',
+    'saveLocalCategoryMemberships'
+  ];
+
+  for (const fnName of requiredFunctions) {
+    assert.equal(typeof storage[fnName], 'function', `storage.js debe exportar la función ${fnName}`);
+  }
+});
+
+test('Flujo completo de sincronización de Snapshot y Activity persiste en storage local sin ReferenceError', async () => {
+  const {
+    saveLocalSnapshot, loadLocalSnapshot,
+    saveLocalActivity, loadLocalActivity
+  } = await import('../src/storage.js');
+
+  localStorage.clear();
+
+  // Simular snapshot remoto
+  const remoteSnapshot = {
+    id: 101,
+    importedAt: '2026-08-28T09:00:00.000Z',
+    followers: ['userA', 'userB', 'userC'],
+    following: ['userA', 'userD', 'userE']
+  };
+
+  // Simular actividad remota
+  const remoteActivity = [
+    { id: 1, type: 'unfollowed', username: 'userD', createdAt: '2026-08-28T08:30:00.000Z' },
+    { id: 2, type: 'followed', username: 'userC', createdAt: '2026-08-28T07:00:00.000Z' }
+  ];
+
+  // 1. Guardar snapshot descargado
+  saveLocalSnapshot(remoteSnapshot);
+  const loadedSnap = loadLocalSnapshot();
+  assert.deepEqual(loadedSnap.followers, ['userA', 'userB', 'userC']);
+  assert.deepEqual(loadedSnap.following, ['userA', 'userD', 'userE']);
+
+  // 2. Reconciliar y guardar actividad
+  const localActivity = [{ type: 'unfollowed', username: 'userZ', createdAt: '2026-08-28T08:00:00.000Z' }];
+  const mergedActivity = deduplicateActivity(localActivity, remoteActivity);
+  saveLocalActivity(mergedActivity);
+
+  const loadedAct = loadLocalActivity();
+  assert.equal(loadedAct.length, 3);
+  assert.equal(loadedAct[0].username, 'userD'); // más reciente primero
+  assert.equal(loadedAct[1].username, 'userZ');
+  assert.equal(loadedAct[2].username, 'userC');
+});
+

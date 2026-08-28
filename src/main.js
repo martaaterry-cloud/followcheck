@@ -19,11 +19,13 @@ import {
 import { supabaseReady } from './supabase.js';
 import {
   loadLocalKnownAccounts, saveLocalKnownAccounts,
-  loadLocalSnapshot, loadLocalActivity,
+  loadLocalSnapshot, saveLocalSnapshot,
+  loadLocalActivity, saveLocalActivity,
   loadLocalProfile, saveLocalProfile,
   loadLocalCategories, saveLocalCategories,
   loadLocalCategoryMemberships, saveLocalCategoryMemberships
 } from './storage.js';
+
 import {
   syncKnownAccounts, classifyAccount, categorizeNotFollowingBack,
   pruneAbsentAccounts, normalizeUsername, isAutoDeleted,
