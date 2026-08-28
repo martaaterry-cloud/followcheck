@@ -539,6 +539,8 @@ async function syncWithCloud(silent = false) {
     // 2. Sincronizar Activity
     const remoteActivity = await getActivity();
     state.activity = deduplicateActivity(state.activity, remoteActivity);
+    saveLocalActivity(state.activity);
+
 
     // 3. Sincronizar Account Preferences (knownAccounts)
     const remotePrefs = await getRemotePreferences(userId);
