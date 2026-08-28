@@ -1036,15 +1036,23 @@ function renderUpdateModal() {
 }
 
 function renderApp() {
+  // Asegurar integridad defensiva de objetos de estado
+  state.knownAccounts = state.knownAccounts || {};
+  state.activity = Array.isArray(state.activity) ? state.activity : [];
+  state.categories = Array.isArray(state.categories) ? state.categories : [];
+  state.categoryMemberships = state.categoryMemberships || {};
+  state.profile = state.profile || { instagramUsername: '', displayName: '' };
+  state.exportState = state.exportState || {};
+
   const snapshot = state.snapshot;
   const notBackAll = calculateNotFollowingBack(snapshot);
   const categorized = categorizeNotFollowingBack(notBackAll, state.knownAccounts);
 
   // Lista base según el estado del sistema seleccionado
-  let baseList = categorized.notFollowingBack;
-  if (state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') baseList = categorized.relevant;
-  if (state.systemStateFilter === 'secondary' || state.systemStateFilter === 'ignored') baseList = categorized.secondary;
-  if (state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') baseList = categorized.unavailable;
+  let baseList = categorized.notFollowingBack || [];
+  if (state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') baseList = categorized.relevant || [];
+  if (state.systemStateFilter === 'secondary' || state.systemStateFilter === 'ignored') baseList = categorized.secondary || [];
+  if (state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') baseList = categorized.unavailable || [];
 
   // Filtrado por subcategoría SOLO si estamos en el grupo Relevantes o subfiltros en No Disponibles
   let categoryFiltered = baseList;
@@ -1066,9 +1074,10 @@ function renderApp() {
   }
 
   // Conteos de subfiltros en No Disponibles
-  const unavDeletedCount = categorized.unavailable.filter(u => isAutoDeleted(u) || state.knownAccounts[u]?.unavailableReason === 'deleted').length;
-  const unavUnfollowedCount = categorized.unavailable.filter(u => state.knownAccounts[u]?.unavailableReason === 'unfollowed' || state.knownAccounts[u]?.unavailableReason === 'manual' || (!state.knownAccounts[u]?.unavailableReason && !isAutoDeleted(u))).length;
-  const unavPossibleBlockCount = categorized.unavailable.filter(u => state.knownAccounts[u]?.unavailableReason === 'possible_block' || state.knownAccounts[u]?.possibleBlock).length;
+  const unavDeletedCount = (categorized.unavailable || []).filter(u => isAutoDeleted(u) || state.knownAccounts[u]?.unavailableReason === 'deleted').length;
+  const unavUnfollowedCount = (categorized.unavailable || []).filter(u => state.knownAccounts[u]?.unavailableReason === 'unfollowed' || state.knownAccounts[u]?.unavailableReason === 'manual' || (!state.knownAccounts[u]?.unavailableReason && !isAutoDeleted(u))).length;
+  const unavPossibleBlockCount = (categorized.unavailable || []).filter(u => state.knownAccounts[u]?.unavailableReason === 'possible_block' || state.knownAccounts[u]?.possibleBlock).length;
+
 
 
   // Filtrado por buscador
@@ -2292,12 +2301,27 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 
 function render() {
-  if (AUTH_ENABLED && supabaseReady() && !state.user) {
-    renderAuth();
-  } else {
-    renderApp();
+  try {
+    if (AUTH_ENABLED && supabaseReady() && !state.user) {
+      renderAuth();
+    } else {
+      renderApp();
+    }
+  } catch (err) {
+    console.error('Fatal render error:', err);
+    const app = document.querySelector('#app');
+    if (app) {
+      app.innerHTML = `
+        <div style="padding: 24px; color: #fff; text-align: center; font-family: -apple-system, sans-serif;">
+          <h2>Ha ocurrido un error al cargar la vista</h2>
+          <p style="color: #999; font-size: 14px; margin: 12px 0 20px;">${esc(err.message)}</p>
+          <button onclick="location.reload()" class="primary" style="padding: 10px 20px; font-weight: 600; border-radius: 8px; cursor: pointer;">Recargar FollowCheck</button>
+        </div>
+      `;
+    }
   }
 }
+
 
 async function boot() {
   try {
