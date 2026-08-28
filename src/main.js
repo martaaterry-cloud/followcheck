@@ -1027,6 +1027,7 @@ function renderUpdateModal() {
 }
 
 function renderApp() {
+  console.log('[groups] render state', state.systemStateFilter);
   const snapshot = state.snapshot;
   const notBackAll = calculateNotFollowingBack(snapshot);
   const categorized = categorizeNotFollowingBack(notBackAll, state.knownAccounts);
@@ -1036,6 +1037,13 @@ function renderApp() {
   if (state.systemStateFilter === 'relevant' || state.systemStateFilter === 'famous') baseList = categorized.relevant;
   if (state.systemStateFilter === 'secondary' || state.systemStateFilter === 'ignored') baseList = categorized.secondary;
   if (state.systemStateFilter === 'unavailable' || state.systemStateFilter === 'deleted') baseList = categorized.unavailable;
+
+  console.log('[groups] counts:', {
+    filter: state.systemStateFilter,
+    categorizedUnavailable: categorized.unavailable.length,
+    baseList: baseList.length
+  });
+
 
   // Filtrado por subcategoría SOLO si estamos en el grupo Relevantes
   let categoryFiltered = baseList;
@@ -1181,25 +1189,26 @@ function renderApp() {
             <input id="searchNotBack" type="text" placeholder="Buscar por usuario…" value="${esc(state.notBackSearch)}" />
           </div>
 
-          <!-- Nivel 1: Selector de 4 Grupos Principales (Delegado) -->
+          <!-- Nivel 1: Selector de 4 Grupos Principales (Delegado + Directo) -->
           <div class="filter-group" id="groupTabsContainer">
-            <button class="filter-btn group-tab ${state.systemStateFilter === 'notBack' ? 'active' : ''}" data-account-group="notBack">
+            <button type="button" class="filter-btn group-tab ${state.systemStateFilter === 'notBack' ? 'active' : ''}" data-account-group="notBack">
               <span>No me siguen</span>
               <span class="filter-btn-count">${categorized.notFollowingBack.length}</span>
             </button>
-            <button class="filter-btn group-tab ${state.systemStateFilter === 'relevant' ? 'active' : ''}" data-account-group="relevant">
+            <button type="button" class="filter-btn group-tab ${state.systemStateFilter === 'relevant' ? 'active' : ''}" data-account-group="relevant">
               <span>Relevantes</span>
               <span class="filter-btn-count">${categorized.relevant.length}</span>
             </button>
-            <button class="filter-btn group-tab ${state.systemStateFilter === 'secondary' ? 'active' : ''}" data-account-group="secondary">
+            <button type="button" class="filter-btn group-tab ${state.systemStateFilter === 'secondary' ? 'active' : ''}" data-account-group="secondary">
               <span>Secundarias</span>
               <span class="filter-btn-count">${categorized.secondary.length}</span>
             </button>
-            <button class="filter-btn group-tab ${state.systemStateFilter === 'unavailable' ? 'active' : ''}" data-account-group="unavailable">
+            <button type="button" class="filter-btn group-tab ${state.systemStateFilter === 'unavailable' ? 'active' : ''}" data-account-group="unavailable">
               <span>No disponibles</span>
               <span class="filter-btn-count">${categorized.unavailable.length}</span>
             </button>
           </div>
+
 
           <!-- Nivel 2: Barra horizontal de Subcategorías (SOLO para Relevantes) -->
           ${state.systemStateFilter === 'relevant' ? `
@@ -1488,23 +1497,40 @@ function attachListeners() {
 
   // Helper único y centralizado para cambiar de grupo
   function setAccountGroup(group) {
+    console.log('[groups] before', state.systemStateFilter);
+    console.log('[groups] requested', group);
     if (!['notBack', 'relevant', 'secondary', 'unavailable'].includes(group)) return;
     state.systemStateFilter = group;
+    console.log('[groups] after set', state.systemStateFilter);
     state.selectedCategoryFilter = 'all';
     state.activeMenuUser = null;
     state.activeMenuPosition = null;
+    console.log('[groups] before render', state.systemStateFilter);
     render();
   }
 
-  // Delegación única de clics sobre el contenedor de grupos
+  // Delegación sobre el contenedor de grupos
   const groupTabsContainer = document.querySelector('#groupTabsContainer');
   if (groupTabsContainer) {
     groupTabsContainer.addEventListener('click', (e) => {
+      console.log('[groups] tap target', e.target);
       const tab = e.target.closest('[data-account-group]');
+      console.log('[groups] tab', tab?.dataset?.accountGroup);
       if (!tab) return;
       setAccountGroup(tab.dataset.accountGroup);
     });
   }
+
+  // Listeners directos en cada botón de grupo
+  document.querySelectorAll('[data-account-group]').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      console.log('[groups] direct btn click:', btn.dataset.accountGroup);
+      setAccountGroup(btn.dataset.accountGroup);
+    });
+  });
+
+
 
   // Filtros de Subcategorías (Nivel 2)
   document.querySelectorAll('[data-cat-filter]').forEach(btn => {

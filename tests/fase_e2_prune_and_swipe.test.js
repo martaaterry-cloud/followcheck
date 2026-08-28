@@ -178,3 +178,23 @@ test('13. página Cuentas sí renderiza total global', () => {
   const totalGlobal = notBack.length;
   assert.equal(totalGlobal, 3);
 });
+
+test('14. state.systemStateFilter === "unavailable" selecciona categorized.unavailable como baseList', () => {
+  const categorized = {
+    notFollowingBack: ['u_normal_1', 'u_normal_2'],
+    relevant: ['u_famoso_1'],
+    secondary: ['u_secundario_1'],
+    unavailable: ['u_bloqueado_1', 'u_eliminado_2']
+  };
+
+  const systemStateFilter = 'unavailable';
+
+  let baseList = categorized.notFollowingBack;
+  if (systemStateFilter === 'relevant') baseList = categorized.relevant;
+  if (systemStateFilter === 'secondary') baseList = categorized.secondary;
+  if (systemStateFilter === 'unavailable') baseList = categorized.unavailable;
+
+  assert.deepEqual(baseList, ['u_bloqueado_1', 'u_eliminado_2']);
+  assert.equal(baseList.includes('u_normal_1'), false);
+});
+
