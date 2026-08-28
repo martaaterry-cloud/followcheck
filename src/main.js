@@ -26,9 +26,10 @@ import {
 } from './storage.js';
 import {
   syncKnownAccounts, classifyAccount, categorizeNotFollowingBack,
-  pruneAbsentAccounts, normalizeUsername,
+  pruneAbsentAccounts, normalizeUsername, isAutoDeleted,
   instagramProfileUrl
 } from './accounts.js';
+
 import {
   initDefaultCategories, addCategory, renameCategory, deleteCategory,
   getAccountCategories, setAccountCategories, toggleAccountCategory,
