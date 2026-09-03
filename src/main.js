@@ -1854,75 +1854,78 @@ function renderApp() {
             </button>
           </div>
 
-          <!-- Sección Cuenta -->
+          <!-- Copia de Seguridad Local -->
           <div class="card settings-card">
-            <div class="settings-title">Cuenta</div>
-            <div class="settings-list">
-              <div class="settings-item">
-                <span class="settings-label">Usuario</span>
-                <span class="settings-value">${esc(state.user?.email || 'Modo local')}</span>
-              </div>
-              <div class="settings-item">
-                <span class="settings-label">Estado</span>
-                <span class="settings-value">${AUTH_ENABLED && state.user ? 'Sesión activa' : 'Desconectado'}</span>
-              </div>
+            <div class="settings-title">Copia de Seguridad Local</div>
+            <p class="sub" style="margin: 0 0 12px;">Exporta o restaura una copia de seguridad en formato JSON con todos tus datos locales (snapshots, historial y organización).</p>
+            <div style="display: flex; gap: 8px;">
+              <button class="secondary" id="exportBackupBtn" style="flex: 1;">
+                Exportar copia
+              </button>
+              <button class="secondary" id="importBackupBtn" style="flex: 1;">
+                Importar copia
+              </button>
             </div>
-            ${AUTH_ENABLED && state.user ? `
-              <div style="margin-top: 12px;">
-                <button class="ghost" id="logoutBtn" style="width: 100%; color: var(--bad); border-color: rgba(255, 71, 87, 0.2);">
-                  Cerrar sesión
-                </button>
-              </div>
-            ` : ''}
+            <input type="file" id="backupFileInput" accept=".json,application/json" style="display: none;" />
           </div>
 
-          <!-- Sección Sincronización -->
-          ${AUTH_ENABLED && state.user ? `
+          <!-- Sección Cuenta (Solo si AUTH_ENABLED) -->
+          ${AUTH_ENABLED ? `
             <div class="card settings-card">
-              <div class="settings-title">Sincronización en la Nube</div>
+              <div class="settings-title">Cuenta</div>
               <div class="settings-list">
                 <div class="settings-item">
-                  <span class="settings-label">Estado</span>
-                  <span class="settings-value">${state.syncStatus === 'syncing' ? 'Sincronizando…' : (state.syncStatus === 'error' ? 'Error al sincronizar' : (state.lastSyncAt ? 'Sincronizado' : 'Pendiente de sincronizar'))}</span>
+                  <span class="settings-label">Usuario</span>
+                  <span class="settings-value">${esc(state.user?.email || 'Modo local')}</span>
                 </div>
                 <div class="settings-item">
-                  <span class="settings-label">Última sincronización</span>
-                  <span class="settings-value">${formatDate(state.lastSyncAt)}</span>
+                  <span class="settings-label">Estado</span>
+                  <span class="settings-value">${state.user ? 'Sesión activa' : 'Desconectado'}</span>
                 </div>
               </div>
-              ${state.syncError ? `
-                <div class="status error" style="margin-top: 10px; font-size: 12px; word-break: break-word;">
-                  ${esc(state.syncError)}
+              ${state.user ? `
+                <div style="margin-top: 12px;">
+                  <button class="ghost" id="logoutBtn" style="width: 100%; color: var(--bad); border-color: rgba(255, 71, 87, 0.2);">
+                    Cerrar sesión
+                  </button>
                 </div>
               ` : ''}
-              <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px;">
-                <button class="secondary" id="syncNowBtn" style="width: 100%;" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
-                  ${state.syncStatus === 'syncing' ? 'Sincronizando…' : 'Sincronizar ahora'}
-                </button>
-                <button class="secondary" id="pushToCloudBtn" style="width: 100%;" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
-                  Subir este dispositivo a la nube
-                </button>
-                <button class="secondary" id="pullFromCloudBtn" style="width: 100%; background: rgba(255,255,255,0.06);" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
-                  Recoger datos de la nube
-                </button>
-                <div style="display: flex; gap: 8px; margin-top: 4px;">
-                  <button class="ghost" id="exportBackupBtn" style="flex: 1; font-size: 12px;">
-                    Exportar copia
-                  </button>
-                  <button class="ghost" id="importBackupBtn" style="flex: 1; font-size: 12px;">
-                    Importar copia
-                  </button>
-                </div>
-                <input type="file" id="backupFileInput" accept=".json,application/json" style="display: none;" />
-                <div style="font-size: 11px; color: var(--text-secondary); text-align: center; margin-top: 2px;">
-                  Sincroniza bidireccionalmente o usa un dispositivo como copia maestra.
-                </div>
-              </div>
             </div>
 
-
-
+            <!-- Sección Sincronización Cloud -->
+            ${state.user ? `
+              <div class="card settings-card">
+                <div class="settings-title">Sincronización en la Nube</div>
+                <div class="settings-list">
+                  <div class="settings-item">
+                    <span class="settings-label">Estado</span>
+                    <span class="settings-value">${state.syncStatus === 'syncing' ? 'Sincronizando…' : (state.syncStatus === 'error' ? 'Error al sincronizar' : (state.lastSyncAt ? 'Sincronizado' : 'Pendiente de sincronizar'))}</span>
+                  </div>
+                  <div class="settings-item">
+                    <span class="settings-label">Última sincronización</span>
+                    <span class="settings-value">${formatDate(state.lastSyncAt)}</span>
+                  </div>
+                </div>
+                ${state.syncError ? `
+                  <div class="status error" style="margin-top: 10px; font-size: 12px; word-break: break-word;">
+                    ${esc(state.syncError)}
+                  </div>
+                ` : ''}
+                <div style="margin-top: 12px; display: flex; flex-direction: column; gap: 8px;">
+                  <button class="secondary" id="syncNowBtn" style="width: 100%;" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
+                    ${state.syncStatus === 'syncing' ? 'Sincronizando…' : 'Sincronizar ahora'}
+                  </button>
+                  <button class="secondary" id="pushToCloudBtn" style="width: 100%;" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
+                    Subir este dispositivo a la nube
+                  </button>
+                  <button class="secondary" id="pullFromCloudBtn" style="width: 100%; background: rgba(255,255,255,0.06);" ${state.syncStatus === 'syncing' ? 'disabled' : ''}>
+                    Recoger datos de la nube
+                  </button>
+                </div>
+              </div>
+            ` : ''}
           ` : ''}
+
 
 
           <!-- Diagnóstico del sistema -->

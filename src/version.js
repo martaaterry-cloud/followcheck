@@ -1,5 +1,6 @@
 // Fuente única y centralizada de versión para FollowCheck
-export const APP_VERSION = "0.3.18";
+export const APP_VERSION = "0.3.19";
+
 
 // BUILD_ID inyectado en tiempo de compilación por Vite o fallback en entorno local
 export const BUILD_ID = typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : 'dev';

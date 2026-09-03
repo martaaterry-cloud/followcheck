@@ -1,4 +1,5 @@
-const CACHE_NAME = 'followcheck-pwa-v0.3.18';
+const CACHE_NAME = 'followcheck-pwa-v0.3.19';
+
 
 
 
